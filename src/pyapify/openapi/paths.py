@@ -1,0 +1,1 @@
+"""OpenAPI operation generation."""

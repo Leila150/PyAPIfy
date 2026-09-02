@@ -1,0 +1,1 @@
+"""Response compression middleware."""

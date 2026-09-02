@@ -1,0 +1,1 @@
+"""Plugin and capability registry."""

@@ -1,0 +1,1 @@
+"""Framework-wide constants."""

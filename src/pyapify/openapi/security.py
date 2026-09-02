@@ -1,0 +1,1 @@
+"""OpenAPI security scheme generation."""
