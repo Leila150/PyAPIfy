@@ -1,4 +1,4 @@
-"""PyAPIfy application: routing, injection, middleware, errors and lifecycle."""
+"""PyAPIfy application: routing, validation, injection, middleware, errors and lifecycle."""
 from __future__ import annotations
 import asyncio, inspect
 from .routing.router import Router
@@ -20,23 +20,17 @@ class BackgroundTasks:
             if inspect.isawaitable(result): await result
 
 class PyAPIfy:
-    def __init__(self, title='PyAPIfy API', version='0.1.0', debug=False, *, auth=None, max_body_size=16*1024*1024):
-        self.title=title; self.version=version; self.debug=debug; self.router=Router(); self._middleware=[]
-        self.errors={}; self._startup=[]; self._shutdown=[]; self.plugins=[]; self.plugin_manager=PluginManager(self)
-        self.auth=auth; self.max_body_size=max_body_size; self._started=False
-    def route(self, path, methods=None, **opts):
+    def __init__(self,title='PyAPIfy API',version='0.1.0',debug=False,*,auth=None,max_body_size=16*1024*1024):
+        self.title=title; self.version=version; self.debug=debug; self.router=Router(); self._middleware=[]; self.errors={}; self._startup=[]; self._shutdown=[]; self.plugins=[]; self.plugin_manager=PluginManager(self); self.auth=auth; self.max_body_size=max_body_size; self._started=False
+    def route(self,path,methods=None,**opts):
         methods=methods or ['GET']
-        def deco(fn):
-            self.router.add(path,fn,methods,name=opts.get('name'),auth=opts.get('auth',self.auth),tags=opts.get('tags',()))
-            return fn
+        def deco(fn): self.router.add(path,fn,methods,name=opts.get('name'),auth=opts.get('auth',self.auth),tags=opts.get('tags',())); return fn
         return deco
     def any(self,path,**opts): return self.route(path,['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'],**opts)
-    def middleware(self, fn=None):
-        if fn is None: return lambda f: self.middleware(f)
+    def middleware(self,fn=None):
+        if fn is None:return lambda f:self.middleware(f)
         self._middleware.append(fn); return fn
-    def add_middleware(self, middleware, *args, **kwargs):
-        instance=middleware(*args,**kwargs) if inspect.isclass(middleware) else middleware
-        return self.middleware(instance)
+    def add_middleware(self,middleware,*args,**kwargs): return self.middleware(middleware(*args,**kwargs) if inspect.isclass(middleware) else middleware)
     def error_handler(self,key):
         def deco(fn): self.errors[key]=fn; return fn
         return deco
@@ -45,18 +39,16 @@ class PyAPIfy:
     def router_group(self,prefix='',**kw): return Router(prefix,**kw)
     def include(self,router): self.router.routes.extend(router.routes); return router
     def use(self,plugin): self.plugin_manager.register(plugin); self.plugins.append(plugin); return plugin
-    async def _lifecycle(self, funcs):
+    async def _lifecycle(self,funcs):
         for fn in funcs:
-            result=fn()
-            if inspect.isawaitable(result): await result
+            r=fn();
+            if inspect.isawaitable(r): await r
     async def startup_async(self):
-        if not self._started:
-            await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._started=True
+        if not self._started: await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._started=True
     async def shutdown_async(self):
-        if self._started:
-            await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started=False
-    async def _resolve_dependency(self, dep, request, cache):
-        if dep.use_cache and dep.dependency in cache: return cache[dep.dependency]
+        if self._started: await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started=False
+    async def _resolve_dependency(self,dep,request,cache):
+        if dep.use_cache and dep.dependency in cache:return cache[dep.dependency]
         fn=dep.dependency; sig=inspect.signature(fn); kwargs={}
         for name,p in sig.parameters.items():
             if name in ('request','req') or p.annotation is Request: kwargs[name]=request
@@ -77,31 +69,37 @@ class PyAPIfy:
             elif name=='cookies': kwargs[name]=request.cookies
             elif name in ('body','data'): kwargs[name]=request.json if request.content_type=='application/json' else request.body
             elif name=='form': kwargs[name]=request.form
+            elif name in ('file','upload'): kwargs[name]=next(iter(request.files.values()),None)
+            elif name in ('files','uploads'): kwargs[name]=request.files
             elif name in ('background','background_tasks'): kwargs[name]=bg
             elif isinstance(p.default,Depends): kwargs[name]=await self._resolve_dependency(p.default,request,cache)
+            elif inspect.isclass(ann):
+                try:
+                    from .validation.models import Model
+                    if issubclass(ann,Model): kwargs[name]=ann(**(request.json if isinstance(request.json,dict) else {})); continue
+                except (TypeError,ValueError): pass
+                if name in request.params: kwargs[name]=request.params[name]; continue
+                raise TypeError(f'Missing required parameter: {name}')
             elif p.default is not inspect.Parameter.empty: kwargs[name]=p.default
+            elif name in request.params: kwargs[name]=request.params[name]
             else: raise TypeError(f'Missing required parameter: {name}')
-        result=fn(**kwargs); result=await result if inspect.isawaitable(result) else result
-        return result,bg
+        result=fn(**kwargs); result=await result if inspect.isawaitable(result) else result; return result,bg
     async def _auth_async(self,auth,request):
         if auth is None:return True
-        values=auth if isinstance(auth,(list,tuple,set)) else [auth]
-        for provider in values:
+        for provider in auth if isinstance(auth,(list,tuple,set)) else [auth]:
             if hasattr(provider,'authenticate'): result=provider.authenticate(request)
             elif callable(provider): result=provider(request)
             else:
-                supplied=request.headers.get('Authorization') or request.headers.get('X-API-Key')
-                result=supplied==provider or supplied==f'Bearer {provider}'
+                supplied=request.headers.get('Authorization') or request.headers.get('X-API-Key'); result=supplied==provider or supplied==f'Bearer {provider}'
             if inspect.isawaitable(result): result=await result
             if result:return True
         return False
     async def dispatch(self,request):
-        if len(request.body)>self.max_body_size: return HTTP.status_code(status=413,detail='Request body too large')
+        if len(request.body)>self.max_body_size:return HTTP.status_code(status=413,detail='Request body too large')
         route,params=self.router.match(request.path,request.method)
         if route is None:
-            methods=self.router.methods_for(request.path)
-            return HTTP.status_code(status=405,detail='Method not allowed',headers={'Allow':', '.join(sorted(methods))}) if methods else HTTP.status_code(status=404,detail='Not found')
-        if not await self._auth_async(route.auth,request): return HTTP.status_code(status=401,detail='Authentication required',headers={'WWW-Authenticate':'Bearer'})
+            methods=self.router.methods_for(request.path); return HTTP.status_code(status=405,detail='Method not allowed',headers={'Allow':', '.join(sorted(methods))}) if methods else HTTP.status_code(status=404,detail='Not found')
+        if not await self._auth_async(route.auth,request):return HTTP.status_code(status=401,detail='Authentication required',headers={'WWW-Authenticate':'Bearer'})
         async def terminal(req):
             result,bg=await self._call(route.endpoint,req,params); response=result if isinstance(result,HTTPResponse) else HTTPResponse(result); await bg.run(); return response
         nxt=terminal
@@ -117,8 +115,7 @@ class PyAPIfy:
             if handler:
                 r=handler(e); r=await r if inspect.isawaitable(r) else r; return r if isinstance(r,HTTPResponse) else HTTPResponse(r,500)
             return HTTPResponse({'error':type(e).__name__,'detail':str(e)} if self.debug else {'detail':'Internal server error'},500)
-    def test(self):
-        from .testing.client import TestClient; return TestClient(self)
+    def test(self): from .testing.client import TestClient; return TestClient(self)
     def openapi(self):
         paths={}
         for r in self.router.routes:
@@ -128,6 +125,5 @@ class PyAPIfy:
     def run(self,host='127.0.0.1',port=8000,debug=None,**kwargs):
         from .server.server import serve; return serve(self,host,port,debug=self.debug if debug is None else debug,**kwargs)
 
-for _m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'):
-    setattr(PyAPIfy,_m.lower(),lambda self,path,_m=_m,**kw:self.route(path,[_m],**kw))
+for _m in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'): setattr(PyAPIfy,_m.lower(),lambda self,path,_m=_m,**kw:self.route(path,[_m],**kw))
 PyAPIfy.depends=staticmethod(depends)
