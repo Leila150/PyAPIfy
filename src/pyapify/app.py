@@ -1,27 +1,31 @@
 """PyAPIfy application: routing, validation, injection, middleware, errors and lifecycle."""
 from __future__ import annotations
-import asyncio, inspect
+import inspect
 from .routing.router import Router
 from .http.request import Request
 from .http.response import HTTPResponse, HTTP
 from .plugins.manager import PluginManager
 
 class Depends:
-    def __init__(self, dependency, *, use_cache=True): self.dependency, self.use_cache = dependency, use_cache
+    def __init__(self,dependency,*,use_cache=True): self.dependency,self.use_cache=dependency,use_cache
 
-def depends(fn, *, use_cache=True): return Depends(fn, use_cache=use_cache)
+def depends(fn,*,use_cache=True): return Depends(fn,use_cache=use_cache)
 
 class BackgroundTasks:
     def __init__(self): self.tasks=[]
-    def add(self, fn, *args, **kwargs): self.tasks.append((fn,args,kwargs)); return self
+    def add(self,fn,*args,**kwargs): self.tasks.append((fn,args,kwargs)); return self
     async def run(self):
         for fn,args,kwargs in self.tasks:
-            result=fn(*args,**kwargs)
-            if inspect.isawaitable(result): await result
+            r=fn(*args,**kwargs)
+            if inspect.isawaitable(r): await r
 
 class PyAPIfy:
-    def __init__(self,title='PyAPIfy API',version='0.1.0',debug=False,*,auth=None,max_body_size=16*1024*1024):
-        self.title=title; self.version=version; self.debug=debug; self.router=Router(); self._middleware=[]; self.errors={}; self._startup=[]; self._shutdown=[]; self.plugins=[]; self.plugin_manager=PluginManager(self); self.auth=auth; self.max_body_size=max_body_size; self._started=False
+    def __init__(self,title='PyAPIfy API',version='0.1.0',debug=False,*,auth=None,max_body_size=16*1024*1024,docs=True):
+        self.title,self.version,self.debug=title,version,debug; self.router=Router(); self._middleware=[]; self.errors={}; self._startup=[]; self._shutdown=[]; self.plugins=[]; self.plugin_manager=PluginManager(self); self.auth=auth; self.max_body_size=max_body_size; self._started=False
+        if docs:
+            self.get('/openapi.json',name='openapi')(lambda: self.openapi())
+            self.get('/docs',name='docs')(lambda: HTTP.html('<!doctype html><html><head><title>'+self.title+' — Docs</title><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-bundle.js"></script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui.css"></head><body><div id="swagger-ui"></div><script>SwaggerUIBundle({url:"/openapi.json",dom_id:"#swagger-ui"})</script></body></html>'))
+            self.get('/redoc',name='redoc')(lambda: HTTP.html('<!doctype html><html><head><title>'+self.title+' — ReDoc</title><script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script></head><body><redoc spec-url="/openapi.json"></redoc></body></html>'))
     def route(self,path,methods=None,**opts):
         methods=methods or ['GET']
         def deco(fn): self.router.add(path,fn,methods,name=opts.get('name'),auth=opts.get('auth',self.auth),tags=opts.get('tags',())); return fn
@@ -41,7 +45,7 @@ class PyAPIfy:
     def use(self,plugin): self.plugin_manager.register(plugin); self.plugins.append(plugin); return plugin
     async def _lifecycle(self,funcs):
         for fn in funcs:
-            r=fn();
+            r=fn()
             if inspect.isawaitable(r): await r
     async def startup_async(self):
         if not self._started: await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._started=True
@@ -49,8 +53,8 @@ class PyAPIfy:
         if self._started: await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started=False
     async def _resolve_dependency(self,dep,request,cache):
         if dep.use_cache and dep.dependency in cache:return cache[dep.dependency]
-        fn=dep.dependency; sig=inspect.signature(fn); kwargs={}
-        for name,p in sig.parameters.items():
+        fn=dep.dependency; kwargs={}
+        for name,p in inspect.signature(fn).parameters.items():
             if name in ('request','req') or p.annotation is Request: kwargs[name]=request
             elif isinstance(p.default,Depends): kwargs[name]=await self._resolve_dependency(p.default,request,cache)
             elif p.default is not inspect.Parameter.empty: kwargs[name]=p.default
@@ -59,6 +63,7 @@ class PyAPIfy:
         if dep.use_cache: cache[fn]=value
         return value
     async def _call(self,fn,request,params):
+        from .validation.models import Model
         sig=inspect.signature(fn); kwargs={}; bg=BackgroundTasks(); cache={}
         for name,p in sig.parameters.items():
             if name in params: kwargs[name]=params[name]; continue
@@ -73,15 +78,9 @@ class PyAPIfy:
             elif name in ('files','uploads'): kwargs[name]=request.files
             elif name in ('background','background_tasks'): kwargs[name]=bg
             elif isinstance(p.default,Depends): kwargs[name]=await self._resolve_dependency(p.default,request,cache)
-            elif inspect.isclass(ann):
-                try:
-                    from .validation.models import Model
-                    if issubclass(ann,Model): kwargs[name]=ann(**(request.json if isinstance(request.json,dict) else {})); continue
-                except (TypeError,ValueError): pass
-                if name in request.params: kwargs[name]=request.params[name]; continue
-                raise TypeError(f'Missing required parameter: {name}')
-            elif p.default is not inspect.Parameter.empty: kwargs[name]=p.default
+            elif inspect.isclass(ann) and issubclass(ann,Model): kwargs[name]=ann(**(request.json if isinstance(request.json,dict) else {}))
             elif name in request.params: kwargs[name]=request.params[name]
+            elif p.default is not inspect.Parameter.empty: kwargs[name]=p.default
             else: raise TypeError(f'Missing required parameter: {name}')
         result=fn(**kwargs); result=await result if inspect.isawaitable(result) else result; return result,bg
     async def _auth_async(self,auth,request):
