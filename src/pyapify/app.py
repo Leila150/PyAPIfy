@@ -1,6 +1,6 @@
 """PyAPIfy application: routing, validation, injection, middleware, errors and lifecycle."""
 from __future__ import annotations
-import inspect, typing
+import inspect, typing, types
 from .routing.router import Router
 from .http.request import Request
 from .http.response import HTTPResponse, HTTP
@@ -21,8 +21,7 @@ class BackgroundTasks:
 
 class PyAPIfy:
     def __init__(self, title='PyAPIfy API', version='0.1.0', debug=False, *, auth=None, max_body_size=16*1024*1024, docs=True):
-        self.title,self.version,self.debug=title,version,debug
-        self.router=Router(); self._middleware=[]; self.errors={}; self._startup=[]; self._shutdown=[]
+        self.title,self.version,self.debug=title,version,debug; self.router=Router(); self._middleware=[]; self.errors={}; self._startup=[]; self._shutdown=[]
         self.plugins=[]; self.plugin_manager=PluginManager(self); self.auth=auth; self.max_body_size=max_body_size; self._started=False
         if docs:
             self.get('/openapi.json',name='openapi')(lambda: self.openapi())
@@ -30,24 +29,17 @@ class PyAPIfy:
             self.get('/redoc',name='redoc')(lambda: HTTP.html('<!doctype html><html><head><meta charset="utf-8"><title>'+self.title+' — ReDoc</title><script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script></head><body><redoc spec-url="/openapi.json"></redoc></body></html>'))
     def route(self,path,methods=None,**opts):
         methods=methods or ['GET']
-        def deco(fn):
-            self.router.add(path,fn,methods,name=opts.get('name'),auth=opts.get('auth',self.auth),tags=opts.get('tags',()))
-            return fn
+        def deco(fn): self.router.add(path,fn,methods,name=opts.get('name'),auth=opts.get('auth',self.auth),tags=opts.get('tags',())); return fn
         return deco
     def any(self,path,**opts): return self.route(path,['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'],**opts)
     def sse(self,path,**opts):
         def deco(fn):
             async def endpoint(**kwargs):
-                result=fn(**kwargs)
-                if inspect.isawaitable(result): result=await result
-                return HTTP.sse(result)
-            endpoint.__name__=getattr(fn,'__name__','sse')
-            endpoint.__doc__=fn.__doc__
+                result=fn(**kwargs); result=await result if inspect.isawaitable(result) else result; return HTTP.sse(result)
+            endpoint.__name__=getattr(fn,'__name__','sse'); endpoint.__doc__=fn.__doc__
             return self.route(path,['GET'],**opts)(endpoint)
         return deco
-    def websocket(self,path,**opts):
-        """Register a WebSocket endpoint for servers that provide a WebSocket transport."""
-        return self.route(path,['GET'],**opts)
+    def websocket(self,path,**opts): return self.route(path,['GET'],**opts)
     def middleware(self,fn=None):
         if fn is None:return lambda f:self.middleware(f)
         self._middleware.append(fn); return fn
@@ -62,21 +54,18 @@ class PyAPIfy:
     def use(self,plugin): self.plugin_manager.register(plugin); self.plugins.append(plugin); return plugin
     async def _lifecycle(self,funcs):
         for fn in funcs:
-            result=fn()
-            if inspect.isawaitable(result): await result
+            result=fn(); result=await result if inspect.isawaitable(result) else result
     async def startup_async(self):
-        if not self._started:
-            await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._started=True
+        if not self._started: await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._started=True
     async def shutdown_async(self):
-        if self._started:
-            await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started=False
+        if self._started: await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started=False
     async def _resolve_dependency(self,dep,request,cache):
         if dep.use_cache and dep.dependency in cache:return cache[dep.dependency]
         fn=dep.dependency; kwargs={}
         for name,p in inspect.signature(fn).parameters.items():
             if name in ('request','req') or p.annotation is Request: kwargs[name]=request
             elif isinstance(p.default,Depends): kwargs[name]=await self._resolve_dependency(p.default,request,cache)
-            elif p.annotation is not inspect.Parameter.empty and name in request.params: kwargs[name]=_convert(request.params[name],p.annotation)
+            elif name in request.params: kwargs[name]=_convert(request.params[name],p.annotation)
             elif p.default is not inspect.Parameter.empty: kwargs[name]=p.default
             else: raise TypeError(f'Missing dependency parameter: {name}')
         value=fn(**kwargs); value=await value if inspect.isawaitable(value) else value
@@ -104,13 +93,12 @@ class PyAPIfy:
                 kwargs[name]=ann(**payload)
             elif name in request.params: kwargs[name]=_convert(request.params[name],ann)
             elif p.default is not inspect.Parameter.empty: kwargs[name]=p.default
-            elif ann is not inspect.Parameter.empty and _is_optional(ann): kwargs[name]=None
+            elif _is_optional(ann): kwargs[name]=None
             else: raise TypeError(f'Missing required parameter: {name}')
         result=fn(**kwargs); result=await result if inspect.isawaitable(result) else result; return result,bg
     async def _auth_async(self,auth,request):
         if auth is None:return True
-        providers=auth if isinstance(auth,(list,tuple,set)) else [auth]
-        for provider in providers:
+        for provider in auth if isinstance(auth,(list,tuple,set)) else [auth]:
             if hasattr(provider,'authenticate'): result=provider.authenticate(request)
             elif callable(provider): result=provider(request)
             else:
@@ -144,29 +132,25 @@ class PyAPIfy:
     def openapi(self):
         from .validation.models import Model
         paths={}; components={'schemas':{}}
+        injection_names={'request','req','headers','cookies','body','data','form','file','upload','files','uploads','background','background_tasks','params','query'}
         for r in self.router.routes:
             item=paths.setdefault(r.path,{})
             for method in sorted(r.methods):
                 operation={'operationId':r.name or r.endpoint.__name__,'responses':{'200':{'description':'Success'}}}
                 if r.tags: operation['tags']=list(r.tags)
                 parameters=[]
-                for name,typ in getattr(r,'param_names',[]):
-                    schema={'type':{'int':'integer','float':'number','bool':'boolean','path':'string','str':'string'}.get(typ,'string')}
-                    parameters.append({'name':name,'in':'path','required':True,'schema':schema})
+                path_names={name for name,_ in getattr(r,'param_names',[])}
+                for name,typ in getattr(r,'param_names',[]): parameters.append({'name':name,'in':'path','required':True,'schema':{'type':{'int':'integer','float':'number','bool':'boolean'}.get(typ,'string')}})
                 try:
                     sig=inspect.signature(r.endpoint)
                     for name,p in sig.parameters.items():
-                        if name in ('request','req','headers','cookies','body','data','form','file','upload','files','uploads','background','background_tasks') or isinstance(p.default,Depends): continue
-                        if name in dict(parameters): continue
+                        if name in injection_names or isinstance(p.default,Depends) or name in path_names: continue
                         ann=p.annotation
-                        if ann is not inspect.Parameter.empty and ann is not Request:
-                            schema=_annotation_schema(ann,components)
-                            parameters.append({'name':name,'in':'query','required':p.default is inspect.Parameter.empty,'schema':schema})
-                    operation['parameters']=parameters
-                    body_param=next((p for p in sig.parameters.values() if inspect.isclass(p.annotation) and issubclass(p.annotation,Model)),None)
-                    if body_param:
-                        components['schemas'][body_param.annotation.__name__]=body_param.annotation.model_json_schema()
-                        operation['requestBody']={'required':True,'content':{'application/json':{'schema':{'$ref':f'#/components/schemas/{body_param.annotation.__name__}'}}}}
+                        if ann is not inspect.Parameter.empty:
+                            parameters.append({'name':name,'in':'query','required':p.default is inspect.Parameter.empty,'schema':_annotation_schema(ann,components)})
+                    for p in sig.parameters.values():
+                        if inspect.isclass(p.annotation) and issubclass(p.annotation,Model):
+                            model=p.annotation; components['schemas'][model.__name__]=model.model_json_schema(); operation['requestBody']={'required':True,'content':{'application/json':{'schema':{'$ref':f'#/components/schemas/{model.__name__}'}}}}; break
                 except (TypeError,ValueError): pass
                 if r.auth: operation['security']=[{'ApiKeyAuth':[]}]
                 item[method.lower()]=operation
@@ -178,18 +162,17 @@ class PyAPIfy:
 
 def _is_optional(annotation):
     origin=typing.get_origin(annotation)
-    return origin in (typing.Union, getattr(typing,'UnionType',object)) and type(None) in typing.get_args(annotation)
+    return origin in (typing.Union,types.UnionType) and type(None) in typing.get_args(annotation)
 
 def _convert(value,annotation):
     if annotation is inspect.Parameter.empty or annotation is str or annotation is typing.Any:return value
     if _is_optional(annotation):
-        non_none=[x for x in typing.get_args(annotation) if x is not type(None)]
-        return None if value in ('','null','None') else _convert(value,non_none[0])
+        non_none=[x for x in typing.get_args(annotation) if x is not type(None)]; return None if value in ('','null','None') else _convert(value,non_none[0])
     origin=typing.get_origin(annotation)
-    if origin is typing.Union:
+    if origin in (typing.Union,types.UnionType):
         for t in typing.get_args(annotation):
             try:return _convert(value,t)
-            except (TypeError,ValueError):pass
+            except (TypeError,ValueError): pass
         return value
     if annotation is bool:return str(value).lower() in ('1','true','yes','on')
     if annotation in (int,float):return annotation(value)
