@@ -87,10 +87,8 @@ class PyAPIfy:
         if auth is None:return True
         values=auth if isinstance(auth,(list,tuple,set)) else [auth]
         for provider in values:
-            if hasattr(provider,'authenticate'):
-                result=provider.authenticate(request)
-            elif callable(provider):
-                result=provider(request)
+            if hasattr(provider,'authenticate'): result=provider.authenticate(request)
+            elif callable(provider): result=provider(request)
             else:
                 supplied=request.headers.get('Authorization') or request.headers.get('X-API-Key')
                 result=supplied==provider or supplied==f'Bearer {provider}'
@@ -125,8 +123,7 @@ class PyAPIfy:
         paths={}
         for r in self.router.routes:
             item=paths.setdefault(r.path,{})
-            for m in r.methods:
-                item[m.lower()]={'operationId':r.name or r.endpoint.__name__,'tags':list(r.tags),'responses':{'200':{'description':'Success'}}}
+            for m in r.methods:item[m.lower()]={'operationId':r.name or r.endpoint.__name__,'tags':list(r.tags),'responses':{'200':{'description':'Success'}}}
         return {'openapi':'3.1.0','info':{'title':self.title,'version':self.version},'paths':paths}
     def run(self,host='127.0.0.1',port=8000,debug=None,**kwargs):
         from .server.server import serve; return serve(self,host,port,debug=self.debug if debug is None else debug,**kwargs)
