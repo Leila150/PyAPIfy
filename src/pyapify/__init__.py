@@ -6,5 +6,6 @@ from .http.status import Status
 from .validation.models import Model, ValidationError, Field
 from .auth import AuthProvider, APIKeyAuth, BearerAuth, BasicAuth, JWTAuth
 from .middleware import CORSMiddleware, SecurityHeadersMiddleware, RequestIDMiddleware, TimingMiddleware, RateLimitMiddleware
+from .websocket import WebSocket, WebSocketDisconnect
 __version__='0.3.1'
-__all__=['PyAPIfy','HTTP','HTTPResponse','Request','Headers','UploadFile','Status','Model','ValidationError','Field','Depends','depends','BackgroundTasks','AuthProvider','APIKeyAuth','BearerAuth','BasicAuth','JWTAuth','CORSMiddleware','SecurityHeadersMiddleware','RequestIDMiddleware','TimingMiddleware','RateLimitMiddleware']
+__all__=['PyAPIfy','HTTP','HTTPResponse','Request','Headers','UploadFile','Status','Model','ValidationError','Field','Depends','depends','BackgroundTasks','AuthProvider','APIKeyAuth','BearerAuth','BasicAuth','JWTAuth','WebSocket','WebSocketDisconnect','CORSMiddleware','SecurityHeadersMiddleware','RequestIDMiddleware','TimingMiddleware','RateLimitMiddleware']
