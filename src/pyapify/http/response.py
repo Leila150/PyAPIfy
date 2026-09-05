@@ -41,7 +41,6 @@ class HTTPResponse(Exception):
         if body_length is not None: headers.setdefault('Content-Length',str(body_length))
         if self.cookies:
             for morsel in self.cookies.values():
-                # Server transports multiple Set-Cookie headers; tests may inspect the combined value.
                 existing=headers.get('Set-Cookie'); value=morsel.OutputString(); headers['Set-Cookie']=f'{existing}\n{value}' if existing else value
         return headers
     def serialize(self):
@@ -88,3 +87,22 @@ class HTTP:
     def redirect(url,*,status=302,headers=None): h=dict(headers or {}); h['Location']=url; return HTTPResponse(None,status,headers=h)
     @staticmethod
     def empty(*,status=204,headers=None): return HTTPResponse(None,status,headers=headers)
+
+# Tiny status helpers keep normal endpoints readable while retaining the full API.
+def _shortcut(status):
+    def make(data=None, *, detail=None, headers=None):
+        return HTTPResponse(data, status, detail=detail, headers=headers)
+    return staticmethod(make)
+
+HTTP.ok = _shortcut(HTTP.OK)
+HTTP.created = _shortcut(HTTP.CREATED)
+HTTP.accepted = _shortcut(HTTP.ACCEPTED)
+HTTP.no_content = staticmethod(lambda *, headers=None: HTTPResponse(None, HTTP.NO_CONTENT, headers=headers))
+HTTP.bad_request = _shortcut(HTTP.BAD_REQUEST)
+HTTP.unauthorized = _shortcut(HTTP.UNAUTHORIZED)
+HTTP.forbidden = _shortcut(HTTP.FORBIDDEN)
+HTTP.not_found = _shortcut(HTTP.NOT_FOUND)
+HTTP.method_not_allowed = _shortcut(HTTP.METHOD_NOT_ALLOWED)
+HTTP.unprocessable = _shortcut(HTTP.UNPROCESSABLE_CONTENT)
+HTTP.too_many_requests = _shortcut(HTTP.TOO_MANY_REQUESTS)
+HTTP.server_error = _shortcut(HTTP.INTERNAL_SERVER_ERROR)
