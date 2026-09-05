@@ -149,7 +149,12 @@ class PyAPIfy:
         doc={'openapi':'3.1.0','info':{'title':self.title,'version':self.version},'paths':paths};
         if components['schemas']:doc['components']=components
         return doc
-    def run(self,host='127.0.0.1',port=8000,debug=None,**kwargs):
+    def run(self,host='0.0.0.0',port=8080,debug=None,**kwargs):
+        """Start the PyAPIfy development server with automatic HTTPS by default.
+
+        Pass ``certfile`` and ``keyfile`` to use an existing certificate. Set
+        ``https=False`` when plain HTTP is explicitly desired.
+        """
         from .server.server import serve; return serve(self,host,port,debug=self.debug if debug is None else debug,**kwargs)
 
 def _is_optional(annotation):
