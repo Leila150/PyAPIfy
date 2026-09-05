@@ -1,16 +1,57 @@
 """Dependency-free threaded HTTP/1.1 and WebSocket transport for PyAPIfy."""
 from __future__ import annotations
-import asyncio, socket, threading, traceback, ssl, base64, hashlib, inspect
+import asyncio, socket, threading, traceback, ssl, base64, hashlib, inspect, os, subprocess, tempfile, shutil
 from collections.abc import Iterable
+from pathlib import Path
 from ..http.request import Request
 from ..http.response import HTTPResponse
 from ..websocket.websocket import WebSocket, WebSocketDisconnect
 
 _REASON={100:'Continue',101:'Switching Protocols',200:'OK',201:'Created',202:'Accepted',204:'No Content',206:'Partial Content',301:'Moved Permanently',302:'Found',303:'See Other',304:'Not Modified',307:'Temporary Redirect',308:'Permanent Redirect',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',405:'Method Not Allowed',408:'Request Timeout',409:'Conflict',413:'Payload Too Large',415:'Unsupported Media Type',422:'Unprocessable Content',426:'Upgrade Required',429:'Too Many Requests',500:'Internal Server Error',501:'Not Implemented',502:'Bad Gateway',503:'Service Unavailable'}
 
+
+def _local_ip():
+    """Best-effort LAN address discovery without sending application traffic."""
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try:
+        s.connect(('192.0.2.1',80))
+        return s.getsockname()[0]
+    except OSError:
+        return '127.0.0.1'
+    finally:
+        s.close()
+
+
+def _dev_certificate():
+    """Create/reuse a local self-signed certificate for the development server."""
+    root=Path.home()/'.pyapify'/'certs'
+    root.mkdir(parents=True,exist_ok=True)
+    cert,key=root/'dev-cert.pem',root/'dev-key.pem'
+    if cert.exists() and key.exists(): return str(cert),str(key)
+    openssl=shutil.which('openssl')
+    if not openssl:
+        raise RuntimeError('Automatic HTTPS requires OpenSSL. Install OpenSSL or pass certfile= and keyfile=.')
+    tmpdir=Path(tempfile.mkdtemp(prefix='pyapify-cert-',dir=str(root)))
+    tmpcert,tmpkey=tmpdir/'cert.pem',tmpdir/'key.pem'
+    try:
+        cmd=[openssl,'req','-x509','-newkey','rsa:2048','-sha256','-nodes','-days','825','-keyout',str(tmpkey),'-out',str(tmpcert),'-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1']
+        result=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,check=False,text=True)
+        if result.returncode!=0:
+            raise RuntimeError('OpenSSL could not create the development certificate: '+result.stderr.strip())
+        os.replace(tmpcert,cert);os.replace(tmpkey,key)
+        try: os.chmod(key,0o600)
+        except OSError: pass
+        return str(cert),str(key)
+    finally:
+        shutil.rmtree(tmpdir,ignore_errors=True)
+
+
 class HTTPServer:
-    def __init__(self,app,host='127.0.0.1',port=8000,debug=False,certfile=None,keyfile=None,keepalive=True,timeout=30,max_header_size=1024*1024,max_request_size=64*1024*1024):
-        self.app,self.host,self.port=app,host,port; self.debug=debug; self.certfile=certfile; self.keyfile=keyfile; self.keepalive=keepalive; self.timeout=timeout; self.max_header_size=max_header_size; self.max_request_size=max_request_size; self._server=None; self._stop=False
+    def __init__(self,app,host='0.0.0.0',port=8080,debug=False,certfile=None,keyfile=None,https=True,keepalive=True,timeout=30,max_header_size=1024*1024,max_request_size=64*1024*1024):
+        self.app,self.host,self.port=app,host,port; self.debug=debug; self.certfile=certfile; self.keyfile=keyfile; self.https=https; self.keepalive=keepalive; self.timeout=timeout; self.max_header_size=max_header_size; self.max_request_size=max_request_size; self._server=None; self._stop=False
+        if self.https:
+            if bool(self.certfile)!=bool(self.keyfile): raise ValueError('certfile and keyfile must be provided together')
+            if not self.certfile:self.certfile,self.keyfile=_dev_certificate()
     def _read_request(self,conn,buffer):
         while b'\r\n\r\n' not in buffer:
             chunk=conn.recv(65536)
@@ -94,7 +135,7 @@ class HTTPServer:
             while not self._stop:
                 parsed,buffer=self._read_request(conn,buffer)
                 if not parsed:break
-                method,target,version,headers,body=parsed;req=Request(method,target,headers,body,addr,'https' if self.certfile else 'http')
+                method,target,version,headers,body=parsed;req=Request(method,target,headers,body,addr,'https' if self.https else 'http')
                 route,params=self.app.router.match(req.path,req.method)
                 if route is not None and route.websocket and self._websocket(conn,addr,req,route,params,headers):break
                 try:res=asyncio.run(self.app.dispatch(req));res=res if isinstance(res,HTTPResponse) else HTTPResponse(res)
@@ -110,10 +151,12 @@ class HTTPServer:
         finally:conn.close()
     def serve_forever(self):
         self._server=socket.socket();self._server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);self._server.bind((self.host,self.port));self._server.listen(128);self._server.settimeout(1);ctx=None
-        if self.certfile:
-            if not self.keyfile:raise ValueError('keyfile is required when certfile is set')
+        if self.https:
             ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.minimum_version=ssl.TLSVersion.TLSv1_2;ctx.load_cert_chain(self.certfile,self.keyfile)
-        scheme='https' if ctx else 'http';print(f'PyAPIfy Development Server\nRunning on {scheme}://{self.host}:{self.port}\nDebug: {"ON" if self.debug else "OFF"}\nKeep-Alive: {"ON" if self.keepalive else "OFF"}')
+        scheme='https' if ctx else 'http';lan=_local_ip();
+        print(f'PyAPIfy Development Server\nRunning on {scheme}://127.0.0.1:{self.port}\nNetwork: {scheme}://{lan}:{self.port}\nDebug: {"ON" if self.debug else "OFF"}\nKeep-Alive: {"ON" if self.keepalive else "OFF"}')
+        if self.https and not self.certfile.endswith('dev-cert.pem'): print('TLS: custom certificate')
+        elif self.https: print('TLS: automatic self-signed development certificate (browser warning is expected)')
         try:
             asyncio.run(self.app.startup_async())
             while not self._stop:
@@ -132,4 +175,5 @@ class HTTPServer:
             try:self._server.close()
             except Exception:pass
 
-def serve(app,host='127.0.0.1',port=8000,debug=False,**kwargs):return HTTPServer(app,host,port,debug,kwargs.get('certfile'),kwargs.get('keyfile'),kwargs.get('keepalive',True),kwargs.get('timeout',30),kwargs.get('max_header_size',1024*1024),kwargs.get('max_request_size',64*1024*1024)).serve_forever()
+def serve(app,host='0.0.0.0',port=8080,debug=False,**kwargs):
+    return HTTPServer(app,host,port,debug,kwargs.get('certfile'),kwargs.get('keyfile'),kwargs.get('https',True),kwargs.get('keepalive',True),kwargs.get('timeout',30),kwargs.get('max_header_size',1024*1024),kwargs.get('max_request_size',64*1024*1024)).serve_forever()
