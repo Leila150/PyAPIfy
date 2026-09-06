@@ -2,6 +2,7 @@
 from __future__ import annotations
 import importlib.util, inspect, json, os, sys
 from pathlib import Path
+from .runtime import PluginCache, PyAPIfyRuntime
 
 
 class Plugin:
@@ -18,7 +19,8 @@ class Plugin:
     def __init__(self, root: str | os.PathLike[str] | None = None):
         self.root = Path(root).resolve() if root else self._discover_root()
         self._registry={}; self._app=None; self._metadata={}; self._loaded={}
-        self._enabled=True; self._registered=False; self._read_metadata()
+        self._enabled=True; self._registered=False; self._used_plugins=[]; self._cache=None
+        self._read_metadata()
 
     def _discover_root(self):
         for frame in inspect.stack()[1:]:
@@ -59,6 +61,40 @@ class Plugin:
             if dependency not in current: current.append(dependency)
         return self
 
+    def use(self, plugin):
+        """Declare another PyAPIfy plugin as a runtime extension dependency."""
+        if not isinstance(plugin, Plugin):
+            raise TypeError('plugin.use() expects a Plugin instance')
+        if plugin is self:
+            raise ValueError('A plugin cannot use itself')
+        if plugin not in self._used_plugins:
+            self._used_plugins.append(plugin)
+        if self._app is not None and plugin not in self._app.plugins:
+            self._app.use(plugin)
+        return plugin
+
+    def used_plugins(self):
+        return tuple(self._used_plugins)
+
+    def cache(self, *, name=None):
+        """Return this plugin's persistent development/runtime cache."""
+        if self._cache is None or name is not None:
+            if self._app is not None and hasattr(self._app, 'runtime'):
+                self._cache = self._app.runtime.cache(name or self.name())
+            else:
+                self._cache = PluginCache(self.root.parent.parent / '.pyapify', name or self.name())
+        return self._cache
+
+    def log(self, level='info', message='', *args, **kwargs):
+        """Write a message to the PyAPIfy project log."""
+        if self._app is not None and hasattr(self._app, 'runtime'):
+            return self._app.runtime.log(level, message, *args, **kwargs)
+        runtime = PyAPIfyRuntime(self.root.parent.parent / '.pyapify')
+        try:
+            return runtime.log(level, message, *args, **kwargs)
+        finally:
+            runtime.close()
+
     def _create(self,kind,name,value,**meta):
         if kind not in self.EXTENSION_KINDS: raise ValueError(f'Unknown PyAPIfy extension kind: {kind}')
         key=name or getattr(value,'__name__',None)
@@ -88,6 +124,8 @@ class Plugin:
         if self._app is not None: self._app._unregister_plugin_extension(kind,name,self)
     def bind(self,app):
         self._app=app; self._registered=True
+        for used in self._used_plugins:
+            if used not in app.plugins: app.use(used)
         for kind,items in self._registry.items():
             for name,item in items.items(): self._attach(kind,name,item['value'],item)
         return self
