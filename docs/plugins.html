@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PyAPIfy Plugins</title><link rel="stylesheet" href="style.css"></head><body><header class="nav"><a class="brand" href="index.html">PyAPIfy</a><nav><a href="docs.html">Docs</a><a class="active" href="plugins.html">Plugins</a><a href="https://github.com/Leila150/PyAPIfy">GitHub</a></nav></header><main class="page"><div class="eyebrow">PLUGIN REGISTRY</div><h1>Extend PyAPIfy.</h1><p class="lead">This registry is for extensions that add capabilities to PyAPIfy. Plugins do not exist to extend Python itself.</p><div class="notice"><b>No plugin manager required.</b><br>Download an extension, place its folder in <code>.pyapify/plugins/</code>, then load it through PyAPIfy.</div><h2>Example plugin</h2><div class="plugin-card"><div><h3>Example Plugin</h3><p>A minimal PyAPIfy extension demonstrating the official Plugin API.</p><small>example_plugin · 1.0.0 · MIT</small></div><a class="button" href="#install">Install guide</a></div><h2 id="install">Installation</h2><pre><code>.pyapify/
+└── plugins/
+    └── example_plugin/
+        ├── main.py
+        ├── info.json
+        └── src/
+            ├── __init__.py
+            └── ...</code></pre><pre><code># main.py
+from pyapify import Plugin
+
+plugin = Plugin()
+example = plugin.load("src/__init__.py")</code></pre><h2>Extension categories</h2><div class="list"><div><b>Decorators</b><span>create_decorator · edit_decorator · delete_decorator</span></div><div><b>Functions</b><span>create_function · edit_function · delete_function</span></div><div><b>Hooks</b><span>Extend PyAPIfy lifecycle and framework events.</span></div><div><b>Routes & middleware</b><span>Add PyAPIfy-specific route types and middleware.</span></div><div><b>CLI & configuration</b><span>Add PyAPIfy commands and configuration extensions.</span></div><div><b>Run systems</b><span>Create custom PyAPIfy run functions such as <code>api.custom_run()</code>.</span></div></div><p class="muted">Community plugins can be added to this registry as the ecosystem grows.</p></main><footer>PyAPIfy plugin registry · <a href="index.html">Home</a></footer></body></html>
