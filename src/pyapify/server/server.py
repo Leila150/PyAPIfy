@@ -6,6 +6,9 @@ from pathlib import Path
 from ..http.request import Request
 from ..http.response import HTTPResponse
 from ..websocket.websocket import WebSocket, WebSocketDisconnect
+from ..logging import get_logger
+
+logger = get_logger("server")
 
 _REASON={100:'Continue',101:'Switching Protocols',200:'OK',201:'Created',202:'Accepted',204:'No Content',206:'Partial Content',301:'Moved Permanently',302:'Found',303:'See Other',304:'Not Modified',307:'Temporary Redirect',308:'Permanent Redirect',400:'Bad Request',401:'Unauthorized',403:'Forbidden',404:'Not Found',405:'Method Not Allowed',408:'Request Timeout',409:'Conflict',413:'Payload Too Large',415:'Unsupported Media Type',422:'Unprocessable Content',426:'Upgrade Required',429:'Too Many Requests',500:'Internal Server Error',501:'Not Implemented',502:'Bad Gateway',503:'Service Unavailable'}
 
@@ -27,9 +30,12 @@ def _dev_certificate():
     root=Path.home()/'.pyapify'/'certs'
     root.mkdir(parents=True,exist_ok=True)
     cert,key=root/'dev-cert.pem',root/'dev-key.pem'
-    if cert.exists() and key.exists(): return str(cert),str(key)
+    if cert.exists() and key.exists():
+        logger.debug("Reusing development TLS certificate: %s", cert)
+        return str(cert),str(key)
     openssl=shutil.which('openssl')
     if not openssl:
+        logger.error("OpenSSL is unavailable; automatic HTTPS cannot create a certificate")
         raise RuntimeError('Automatic HTTPS requires OpenSSL. Install OpenSSL or pass certfile= and keyfile=.')
     tmpdir=Path(tempfile.mkdtemp(prefix='pyapify-cert-',dir=str(root)))
     tmpcert,tmpkey=tmpdir/'cert.pem',tmpdir/'key.pem'
@@ -37,10 +43,12 @@ def _dev_certificate():
         cmd=[openssl,'req','-x509','-newkey','rsa:2048','-sha256','-nodes','-days','825','-keyout',str(tmpkey),'-out',str(tmpcert),'-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1']
         result=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,check=False,text=True)
         if result.returncode!=0:
+            logger.error("OpenSSL certificate generation failed: %s", result.stderr.strip())
             raise RuntimeError('OpenSSL could not create the development certificate: '+result.stderr.strip())
         os.replace(tmpcert,cert);os.replace(tmpkey,key)
         try: os.chmod(key,0o600)
         except OSError: pass
+        logger.info("Created development TLS certificate: %s", cert)
         return str(cert),str(key)
     finally:
         shutil.rmtree(tmpdir,ignore_errors=True)
@@ -49,6 +57,7 @@ def _dev_certificate():
 class HTTPServer:
     def __init__(self,app,host='0.0.0.0',port=8080,debug=False,certfile=None,keyfile=None,https=True,keepalive=True,timeout=30,max_header_size=1024*1024,max_request_size=64*1024*1024):
         self.app,self.host,self.port=app,host,port; self.debug=debug; self.certfile=certfile; self.keyfile=keyfile; self.https=https; self.keepalive=keepalive; self.timeout=timeout; self.max_header_size=max_header_size; self.max_request_size=max_request_size; self._server=None; self._stop=False
+        logger.debug("HTTPServer configured: host=%s port=%s https=%s keepalive=%s", host, port, https, keepalive)
         if self.https:
             if bool(self.certfile)!=bool(self.keyfile): raise ValueError('certfile and keyfile must be provided together')
             if not self.certfile:self.certfile,self.keyfile=_dev_certificate()
@@ -116,64 +125,83 @@ class HTTPServer:
     def _websocket(self,conn,addr,req,route,params,headers):
         if headers.get('Upgrade','').lower()!='websocket' or 'upgrade' not in headers.get('Connection','').lower():return False
         key=headers.get('Sec-WebSocket-Key'); version=headers.get('Sec-WebSocket-Version','13')
-        if not key or version!='13': self._write_headers(conn,400,{'Content-Length':'0','Connection':'close'});return True
+        if not key or version!='13':
+            logger.warning("Invalid WebSocket handshake from %s", addr)
+            self._write_headers(conn,400,{'Content-Length':'0','Connection':'close'});return True
         accept=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
         self._write_headers(conn,101,{'Upgrade':'websocket','Connection':'Upgrade','Sec-WebSocket-Accept':accept})
+        logger.info("WebSocket upgrade accepted: %s %s", addr, req.path)
         ws=WebSocket(conn);req.websocket=ws
         async def run():
             if not await self.app._auth_async(route.auth,req):ws.close(1008,'Authentication required');return
             try: await self.app._call(route.endpoint,req,params,websocket=ws)
             except WebSocketDisconnect:pass
             except Exception:
+                logger.exception("WebSocket endpoint failed: %s", req.path)
                 if self.debug:traceback.print_exc()
                 try:ws.close(1011,'Internal server error')
                 except Exception:pass
         asyncio.run(run());return True
     def _handle(self,conn,addr):
         conn.settimeout(self.timeout);buffer=b''
+        logger.debug("Connection accepted: %s", addr)
         try:
             while not self._stop:
                 parsed,buffer=self._read_request(conn,buffer)
                 if not parsed:break
                 method,target,version,headers,body=parsed;req=Request(method,target,headers,body,addr,'https' if self.https else 'http')
+                logger.info("Request: %s %s from %s", method, req.path, addr)
                 route,params=self.app.router.match(req.path,req.method)
                 if route is not None and route.websocket and self._websocket(conn,addr,req,route,params,headers):break
                 try:res=asyncio.run(self.app.dispatch(req));res=res if isinstance(res,HTTPResponse) else HTTPResponse(res)
                 except Exception:
+                    logger.exception("Request dispatch failed: %s %s", method, req.path)
                     if self.debug:traceback.print_exc()
                     res=HTTPResponse({'detail':'Internal server error'},500)
+                logger.info("Response: %s %s -> %s", method, req.path, res.status)
                 if self._send_response(conn,res,headers,version):break
         except (socket.timeout,ConnectionError,BrokenPipeError):pass
         except Exception:
+            logger.exception("Connection handler failed: %s", addr)
             if self.debug:traceback.print_exc()
             try:self._write_headers(conn,400,{'Content-Length':'0','Connection':'close'})
             except Exception:pass
-        finally:conn.close()
+        finally:
+            conn.close()
+            logger.debug("Connection closed: %s", addr)
     def serve_forever(self):
         self._server=socket.socket();self._server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);self._server.bind((self.host,self.port));self._server.listen(128);self._server.settimeout(1);ctx=None
         if self.https:
             ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);ctx.minimum_version=ssl.TLSVersion.TLSv1_2;ctx.load_cert_chain(self.certfile,self.keyfile)
         scheme='https' if ctx else 'http';lan=_local_ip();
+        logger.info("PyAPIfy server starting: %s://%s:%s", scheme, self.host, self.port)
+        logger.info("Server network address: %s://%s:%s", scheme, lan, self.port)
         print(f'PyAPIfy Development Server\nRunning on {scheme}://127.0.0.1:{self.port}\nNetwork: {scheme}://{lan}:{self.port}\nDebug: {"ON" if self.debug else "OFF"}\nKeep-Alive: {"ON" if self.keepalive else "OFF"}')
         if self.https and not self.certfile.endswith('dev-cert.pem'): print('TLS: custom certificate')
         elif self.https: print('TLS: automatic self-signed development certificate (browser warning is expected)')
         try:
             asyncio.run(self.app.startup_async())
+            logger.info("Application startup complete")
             while not self._stop:
                 try:conn,addr=self._server.accept()
                 except socket.timeout:continue
                 if ctx:
                     try:conn=ctx.wrap_socket(conn,server_side=True)
-                    except ssl.SSLError:conn.close();continue
+                    except ssl.SSLError:
+                        logger.warning("TLS handshake failed from %s", addr)
+                        conn.close();continue
                 threading.Thread(target=self._handle,args=(conn,addr),daemon=True).start()
-        except KeyboardInterrupt:pass
+        except KeyboardInterrupt:
+            logger.info("Server interrupted by user")
         finally:
             self._stop=True
-            try:asyncio.run(self.app.shutdown_async())
+            try:asyncio.run(self.app.shutdown_async());logger.info("Application shutdown complete")
             except Exception:
+                logger.exception("Application shutdown failed")
                 if self.debug:traceback.print_exc()
             try:self._server.close()
             except Exception:pass
+            logger.info("PyAPIfy server stopped")
 
 def serve(app,host='0.0.0.0',port=8080,debug=False,**kwargs):
     return HTTPServer(app,host,port,debug,kwargs.get('certfile'),kwargs.get('keyfile'),kwargs.get('https',True),kwargs.get('keepalive',True),kwargs.get('timeout',30),kwargs.get('max_header_size',1024*1024),kwargs.get('max_request_size',64*1024*1024)).serve_forever()
