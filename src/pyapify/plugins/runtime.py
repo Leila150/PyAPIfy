@@ -10,6 +10,8 @@ class PluginCache:
         safe = ''.join(c if c.isalnum() or c in '._-' else '_' for c in plugin_name) or 'plugin'
         self.root = Path(root).expanduser().resolve() / 'cache' / 'plugins_cache' / safe
         self.root.mkdir(parents=True, exist_ok=True)
+        self.logger = logging.getLogger('pyapify.cache')
+        self.logger.debug('Plugin cache initialized: %s', self.root)
 
     def _path(self, key):
         if not isinstance(key, str) or not key: raise TypeError('Cache key must be a non-empty string')
@@ -21,31 +23,41 @@ class PluginCache:
         payload = {'value': value, 'expires': None if ttl is None else time.time() + ttl}
         path, tmp = self._path(key), self._path(key).with_suffix('.tmp')
         with tmp.open('wb') as fh: pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
-        tmp.replace(path); return value
+        tmp.replace(path)
+        self.logger.debug('Cache set: %s', key)
+        return value
 
     put = set
 
     def get(self, key, default=None):
         path = self._path(key)
-        if not path.is_file(): return default
+        if not path.is_file():
+            self.logger.debug('Cache miss: %s', key)
+            return default
         try:
             with path.open('rb') as fh: payload = pickle.load(fh)
             expires = payload.get('expires')
             if expires is not None and time.time() >= expires:
-                path.unlink(missing_ok=True); return default
+                path.unlink(missing_ok=True); self.logger.debug('Cache expired: %s', key); return default
+            self.logger.debug('Cache hit: %s', key)
             return payload.get('value', default)
-        except (OSError, EOFError, pickle.PickleError, ValueError, TypeError, AttributeError): return default
+        except (OSError, EOFError, pickle.PickleError, ValueError, TypeError, AttributeError):
+            self.logger.warning('Invalid cache entry ignored: %s', key, exc_info=True)
+            return default
 
     def has(self, key):
         marker = object(); return self.get(key, marker) is not marker
     contains = has
 
     def delete(self, key):
-        path = self._path(key); existed = path.is_file(); path.unlink(missing_ok=True); return existed
+        path = self._path(key); existed = path.is_file(); path.unlink(missing_ok=True)
+        self.logger.debug('Cache delete: %s existed=%s', key, existed)
+        return existed
     remove = delete
 
     def clear(self):
         for path in self.root.glob('*.cache'): path.unlink(missing_ok=True)
+        self.logger.info('Plugin cache cleared: %s', self.root)
         return self
 
     def keys(self): return [p.stem for p in self.root.glob('*.cache')]
@@ -85,6 +97,7 @@ class PyAPIfyRuntime:
         self.plugins_dir = self.root / 'plugins'; self.logs_dir = self.root / 'logs'; self.cache_dir = self.root / 'cache'
         self.plugins_cache_dir = self.cache_dir / 'plugins_cache'; self.pyapify_cache_dir = self.cache_dir / 'pyapify_cache'
         self.ensure(); self.log_file = self.logs_dir / 'latest_log.txt'; self.logger = self._create_logger()
+        self.log('info', 'PyAPIfy runtime ready: %s', self.root)
 
     def ensure(self):
         for path in (self.plugins_dir, self.logs_dir, self.plugins_cache_dir, self.pyapify_cache_dir): path.mkdir(parents=True, exist_ok=True)
@@ -107,7 +120,7 @@ class PyAPIfyRuntime:
             try: handler.close()
             except Exception: pass
         handler = logging.FileHandler(self.log_file, encoding='utf-8')
-        handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')); logger.addHandler(handler); return logger
+        handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(name)s | %(message)s')); logger.addHandler(handler); return logger
 
     def cache(self, plugin_name='pyapify'): return PluginCache(self.root, plugin_name)
     def log(self, level, message, *args, **kwargs):
@@ -119,5 +132,6 @@ class PyAPIfyRuntime:
         for handler in list(self.logger.handlers): handler.flush(); handler.close(); self.logger.removeHandler(handler)
 
     def clear_cache(self):
+        self.log('info', 'Clearing PyAPIfy runtime cache')
         if self.cache_dir.exists(): shutil.rmtree(self.cache_dir)
         self.ensure(); return self
