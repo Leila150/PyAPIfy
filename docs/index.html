@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PyAPIfy — Simple outside. Powerful inside.</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="nav"><a class="brand" href="index.html">PyAPIfy</a><nav><a href="docs.html">Docs</a><a href="plugins.html">Plugins</a><a href="https://github.com/Leila150/PyAPIfy">GitHub</a></nav></header>
+<main>
+<section class="hero"><div class="badge">Python framework</div><h1>Simple outside.<br><span>Powerful inside.</span></h1><p>Build APIs and Python applications with decorators, typing, serious infrastructure, and an extension system designed specifically for PyAPIfy.</p><div class="actions"><a class="button primary" href="docs.html">Read the docs</a><a class="button" href="plugins.html">Explore plugins</a></div></section>
+<section class="grid"><article><b>Fast to start</b><p>Write a route with a decorator and a normal Python function.</p></article><article><b>Power when needed</b><p>Models, middleware, auth, WebSockets, SSE, testing, lifecycle and more.</p></article><article><b>Extensible</b><p>Plugins extend PyAPIfy itself — decorators, functions, hooks, commands, runs and more.</p></article></section>
+<section class="code"><div><div class="eyebrow">QUICK START</div><h2>Python, not framework ceremony.</h2><p>Declare what you need and let PyAPIfy handle the infrastructure.</p></div><pre><code>from pyapify import PyAPIfy
+
+api = PyAPIfy()
+
+@api.get("/hello")
+def hello():
+    return {"message": "Hello!"}
+
+api.run()</code></pre></section>
+<section class="plugin-callout"><div><div class="eyebrow">PLUGIN ECOSYSTEM</div><h2>Extend PyAPIfy. Nothing else.</h2><p>Plugins are first-class PyAPIfy extensions. Browse the registry, download an extension, place it in <code>.pyapify/plugins/</code>, and use it in your application.</p></div><a class="button primary" href="plugins.html">Browse plugins →</a></section>
+</main>
+<footer>PyAPIfy · Simple outside. Powerful inside. · <a href="https://github.com/Leila150/PyAPIfy">GitHub</a></footer>
+</body></html>
