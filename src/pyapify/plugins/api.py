@@ -1,4 +1,8 @@
-"""Public API for building PyAPIfy-only extensions."""
+"""Public API for building PyAPIfy-only extensions.
+
+Plugins extend PyAPIfy itself; they are deliberately not a general-purpose
+Python plugin system.
+"""
 from __future__ import annotations
 
 import importlib.util
@@ -7,21 +11,29 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 class Plugin:
-    """Extension builder for PyAPIfy.
+    """Builder and lifecycle object for a PyAPIfy extension plugin."""
 
-    A Plugin is intentionally scoped to PyAPIfy. It can register framework
-    decorators, functions, hooks, route types, middleware, commands, config,
-    tests and other PyAPIfy extension points. It is not a general Python
-    plugin manager.
-    """
+    # These are the extension points discussed for PyAPIfy.  Keeping the
+    # catalogue explicit makes the public API discoverable while __getattr__
+    # still permits future PyAPIfy extension points without a breaking API.
+    EXTENSION_KINDS = (
+        "decorator", "function", "hook", "route_type", "middleware",
+        "command", "config", "test", "run",
+        "request_handler", "response_type", "http_method", "status_code",
+        "converter", "validator", "model_type", "dependency", "auth",
+        "permission", "error_handler", "lifecycle", "task", "schedule",
+        "openapi", "documentation", "websocket", "sse", "html", "css",
+        "js", "gui", "group", "router", "storage", "cache", "server",
+        "https", "log_handler", "environment", "plugin_extension",
+    )
 
     def __init__(self, root: str | os.PathLike[str] | None = None):
         self.root = Path(root).resolve() if root else self._discover_root()
-        self._registry: dict[str, dict[str, Any]] = {}
+        self._registry: dict[str, dict[str, dict[str, Any]]] = {}
         self._app = None
         self._metadata: dict[str, Any] = {}
         self._loaded: dict[str, Any] = {}
@@ -46,8 +58,11 @@ class Plugin:
             except (OSError, ValueError):
                 self._metadata = {}
 
+    # ------------------------------------------------------------------
     # Loading / metadata
+    # ------------------------------------------------------------------
     def load(self, path: str | os.PathLike[str]):
+        """Load a Python file relative to the plugin root."""
         target = (self.root / path).resolve()
         if not target.is_file():
             raise FileNotFoundError(target)
@@ -74,15 +89,22 @@ class Plugin:
         return self._metadata.get("version", "0.0.0")
 
     def dependencies(self):
-        return list(self._metadata.get("dependencies", []))
+        value = self._metadata.get("dependencies", [])
+        return list(value) if isinstance(value, (list, tuple, set)) else [value]
 
     def require(self, *dependencies):
-        self._metadata.setdefault("dependencies", [])
+        """Declare PyAPIfy plugin dependencies in this plugin's metadata."""
+        current = self._metadata.setdefault("dependencies", [])
+        if not isinstance(current, list):
+            current = self._metadata["dependencies"] = list(current) if current else []
         for dependency in dependencies:
-            if dependency not in self._metadata["dependencies"]:
-                self._metadata["dependencies"].append(dependency)
+            if dependency not in current:
+                current.append(dependency)
         return self
 
+    # ------------------------------------------------------------------
+    # Core registry
+    # ------------------------------------------------------------------
     def _create(self, kind: str, name: str | None, value: Any, **meta):
         key = name or getattr(value, "__name__", None)
         if not key:
@@ -91,7 +113,7 @@ class Plugin:
         if key in bucket:
             raise ValueError(f"{kind} already exists: {key}")
         bucket[key] = {"value": value, **meta}
-        self._attach(kind, key, value, meta)
+        self._attach(kind, key, value, bucket[key])
         return value
 
     def _edit(self, kind: str, name: str, value: Any = None, **meta):
@@ -129,12 +151,14 @@ class Plugin:
                 self._attach(kind, name, item["value"], item)
         return self
 
-    # Generic decorator factory used by the public create/edit/delete methods.
     def _decorator(self, kind: str, name: str | None = None, **meta):
         def register(value):
             return self._create(kind, name, value, **meta)
         return register
 
+    # ------------------------------------------------------------------
+    # Explicit public creation/edit/delete APIs
+    # ------------------------------------------------------------------
     def create_decorator(self, name=None, **meta): return self._decorator("decorator", name, **meta)
     def edit_decorator(self, name, value=None, **meta): return self._edit("decorator", name, value, **meta)
     def delete_decorator(self, name): return self._delete("decorator", name)
@@ -171,40 +195,65 @@ class Plugin:
     def edit_run(self, name, value=None, **meta): return self._edit("run", name, value, **meta)
     def delete_run(self, name): return self._delete("run", name)
 
-    # Additional PyAPIfy extension points.
+    # Additional explicitly supported PyAPIfy extension points.
     def _simple_create(self, kind, name=None, **meta): return self._decorator(kind, name, **meta)
     def _simple_edit(self, kind, name, value=None, **meta): return self._edit(kind, name, value, **meta)
     def _simple_delete(self, kind, name): return self._delete(kind, name)
 
+    # Generate real class methods rather than relying only on __getattr__, so
+    # IDEs, dir(), documentation tools and static inspection can discover them.
+    @classmethod
+    def _install_extension_methods(cls):
+        for kind in cls.EXTENSION_KINDS:
+            if hasattr(cls, f"create_{kind}"):
+                continue
+            setattr(cls, f"create_{kind}", lambda self, name=None, _k=kind, **meta: self._simple_create(_k, name, **meta))
+            setattr(cls, f"edit_{kind}", lambda self, name, value=None, _k=kind, **meta: self._simple_edit(_k, name, value, **meta))
+            setattr(cls, f"delete_{kind}", lambda self, name, _k=kind: self._simple_delete(_k, name))
+
     def __getattr__(self, attr):
         if attr.startswith("create_"):
-            kind = attr[7:]
-            return lambda name=None, **meta: self._simple_create(kind, name, **meta)
+            return lambda name=None, **meta: self._simple_create(attr[7:], name, **meta)
         if attr.startswith("edit_"):
-            kind = attr[5:]
-            return lambda name, value=None, **meta: self._simple_edit(kind, name, value, **meta)
+            return lambda name, value=None, **meta: self._simple_edit(attr[5:], name, value, **meta)
         if attr.startswith("delete_"):
-            kind = attr[7:]
-            return lambda name: self._simple_delete(kind, name)
+            return lambda name: self._simple_delete(attr[7:], name)
         raise AttributeError(attr)
 
-    # Registration state
-    def register(self): self._registered = True; return self
-    def unregister(self): self._registered = False; return self
+    # ------------------------------------------------------------------
+    # Registration / lifecycle
+    # ------------------------------------------------------------------
+    def register(self):
+        self._registered = True
+        if self._app is not None:
+            self.bind(self._app)
+        return self
+
+    def unregister(self):
+        if self._app is not None:
+            for kind, items in list(self._registry.items()):
+                for name in list(items):
+                    self._detach(kind, name)
+        self._registered = False
+        return self
+
     def enable(self):
         self._enabled = True
         if self._app:
             self.bind(self._app)
         return self
+
     def disable(self):
+        if self._enabled:
+            for kind, items in list(self._registry.items()):
+                for name in list(items):
+                    self._detach(kind, name)
         self._enabled = False
-        for kind, items in list(self._registry.items()):
-            for name in list(items): self._detach(kind, name)
         return self
+
     def enabled(self): return self._enabled
     def is_registered(self): return self._registered
 
-    # Lifecycle compatibility for PluginManager.
     def startup(self, app):
         hook = self._registry.get("hook", {}).get("startup")
         if hook:
@@ -219,11 +268,18 @@ class Plugin:
             if inspect.isawaitable(result): return result
         return None
 
-    def uninstall(self, app):
-        for kind, items in list(self._registry.items()):
-            for name in list(items): app._unregister_plugin_extension(kind, name, self)
+    def uninstall(self, app=None):
+        target = app or self._app
+        if target is not None:
+            for kind, items in list(self._registry.items()):
+                for name in list(items):
+                    target._unregister_plugin_extension(kind, name, self)
         self._app = None
         self._registered = False
+        return self
 
     def capabilities(self):
         return set(self._registry)
+
+
+Plugin._install_extension_methods()
