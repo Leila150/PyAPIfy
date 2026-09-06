@@ -21,10 +21,42 @@ class BackgroundTasks:
 class PyAPIfy:
     def __init__(self,title='PyAPIfy API',version='0.1.0',debug=False,*,auth=None,max_body_size=16*1024*1024,docs=True):
         self.title,self.version,self.debug=title,version,debug; self.router=Router(); self._middleware=[]; self.errors={}; self._startup=[]; self._shutdown=[]; self.plugins=[]; self.plugin_manager=PluginManager(self); self.auth=auth; self.max_body_size=max_body_size; self._started=False
+        self._plugin_extensions={}; self._plugin_hooks={}
         if docs:
             self.get('/openapi.json',name='openapi')(lambda:self.openapi())
-            self.get('/docs',name='docs')(lambda:HTTP.html('<!doctype html><html><head><meta charset="utf-8"><title>'+self.title+' — Docs</title><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-bundle.js"></script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui.css"></head><body><div id="swagger-ui"></div><script>SwaggerUIBundle({url:"/openapi.json",dom_id:"#swagger-ui"})</script></div></body></html>'))
+            self.get('/docs',name='docs')(lambda:HTTP.html('<!doctype html><html><head><meta charset="utf-8"><title>'+self.title+' — Docs</title><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui-bundle.js"></script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist/swagger-ui.css"></head><body><div id="swagger-ui"></div><script>SwaggerUIBundle({url:"/openapi.json",dom_id:"#swagger-ui"})</script></body></html>'))
             self.get('/redoc',name='redoc')(lambda:HTTP.html('<!doctype html><html><head><meta charset="utf-8"><title>'+self.title+' — ReDoc</title><script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script></head><body><redoc spec-url="/openapi.json"></redoc></body></html>'))
+
+    def _register_plugin_extension(self, kind, name, value, meta, plugin):
+        bucket=self._plugin_extensions.setdefault(kind,{})
+        bucket[name]=(value,plugin,meta)
+        if kind in ('function','run','decorator'):
+            def extension(*args, __value=value, **kwargs): return __value(self,*args,**kwargs)
+            extension.__name__=name
+            extension.__doc__=getattr(value,'__doc__',None)
+            setattr(self,name,extension)
+        elif kind=='hook':
+            self._plugin_hooks[name]=value
+        elif kind=='middleware':
+            if value not in self._middleware:self._middleware.append(value)
+
+    def _unregister_plugin_extension(self, kind, name, plugin):
+        bucket=self._plugin_extensions.get(kind,{})
+        item=bucket.get(name)
+        if not item or item[1] is not plugin:return
+        value=item[0]; bucket.pop(name,None)
+        if kind in ('function','run','decorator'):
+            current=getattr(self,name,None)
+            if current is not None: delattr(self,name)
+        elif kind=='hook':
+            self._plugin_hooks.pop(name,None)
+        elif kind=='middleware':
+            self._middleware=[mw for mw in self._middleware if mw is not value]
+
+    def plugin_extensions(self, kind=None):
+        if kind is None:return {k:dict(v) for k,v in self._plugin_extensions.items()}
+        return dict(self._plugin_extensions.get(kind,{}))
+
     def route(self,path,methods=None,**opts):
         methods=methods or ['GET']
         def deco(fn): self.router.add(path,fn,methods,name=opts.get('name'),auth=opts.get('auth',self.auth),tags=opts.get('tags',()),websocket=opts.get('websocket',False)); return fn
@@ -144,17 +176,13 @@ class PyAPIfy:
                             model=p.annotation; components['schemas'][model.__name__]=model.model_json_schema(); op['requestBody']={'required':True,'content':{'application/json':{'schema':{'$ref':f'#/components/schemas/{model.__name__}'}}}}; break
                 except (TypeError,ValueError):pass
                 if params:op['parameters']=params
-                if r.auth:op['security']=[{'ApiKeyAuth':[]}]
+                if r.auth:op['security']=[{'ApiKeyAuth':[]}] 
                 item[method.lower()]=op
         doc={'openapi':'3.1.0','info':{'title':self.title,'version':self.version},'paths':paths};
         if components['schemas']:doc['components']=components
         return doc
     def run(self,host='0.0.0.0',port=8080,debug=None,**kwargs):
-        """Start the PyAPIfy development server with automatic HTTPS by default.
-
-        Pass ``certfile`` and ``keyfile`` to use an existing certificate. Set
-        ``https=False`` when plain HTTP is explicitly desired.
-        """
+        """Start the PyAPIfy development server with automatic HTTPS by default."""
         from .server.server import serve; return serve(self,host,port,debug=self.debug if debug is None else debug,**kwargs)
 
 def _is_optional(annotation):
