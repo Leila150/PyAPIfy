@@ -5,11 +5,16 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 from collections.abc import Iterable
 from .status import validate_status, Status
+from ..logging import get_logger
+
+logger = get_logger("http.response")
+
 
 class HTTPResponse(Exception):
     def __init__(self,data=None,status=200,*,detail=None,headers=None,content_type=None):
         super().__init__(detail); self.data=data; self.status=validate_status(status); self.detail=detail
         self.headers={str(k):str(v) for k,v in (headers or {}).items()}; self.content_type=content_type; self.cookies=SimpleCookie()
+        logger.debug("Response created: status=%s content_type=%s", self.status, content_type or '<auto>')
     def header(self,name,value): self.headers[str(name)]=str(value); return self
     def cookie(self,name,value,**kwargs):
         self.cookies[name]=value
@@ -38,7 +43,8 @@ class HTTPResponse(Exception):
             for morsel in self.cookies.values():
                 existing=headers.get('Set-Cookie'); value=morsel.OutputString(); headers['Set-Cookie']=f'{existing}\n{value}' if existing else value
         return headers
-    def serialize(self):body=b''.join(self._body_iter());return self.status,self._headers(len(body)),body
+    def serialize(self):
+        body=b''.join(self._body_iter()); headers=self._headers(len(body)); logger.debug("Response serialized: status=%s bytes=%d", self.status, len(body)); return self.status,headers,body
 
 class HTTP:
     CONTINUE=Status.CONTINUE; OK=Status.OK; CREATED=Status.CREATED; ACCEPTED=Status.ACCEPTED; NO_CONTENT=Status.NO_CONTENT; BAD_REQUEST=Status.BAD_REQUEST; UNAUTHORIZED=Status.UNAUTHORIZED; FORBIDDEN=Status.FORBIDDEN; NOT_FOUND=Status.NOT_FOUND; METHOD_NOT_ALLOWED=Status.METHOD_NOT_ALLOWED; UNPROCESSABLE_CONTENT=Status.UNPROCESSABLE_CONTENT; TOO_MANY_REQUESTS=Status.TOO_MANY_REQUESTS; INTERNAL_SERVER_ERROR=Status.INTERNAL_SERVER_ERROR; NOT_IMPLEMENTED=Status.NOT_IMPLEMENTED; SERVICE_UNAVAILABLE=Status.SERVICE_UNAVAILABLE
@@ -46,6 +52,7 @@ class HTTP:
     def status_code(data=None,*,code=None,status=None,detail=None,headers=None):
         if code is None: code=200 if status is None else status
         elif status is not None and code != status: raise ValueError('code and status must match when both are supplied')
+        logger.debug("Creating status response: %s", code)
         return HTTPResponse(data,code,detail=detail,headers=headers)
     @staticmethod
     def response(data=None,*,status=200,headers=None):return HTTPResponse(data,status,headers=headers)
@@ -62,7 +69,7 @@ class HTTP:
     @staticmethod
     def file(path,*,status=200,filename=None,headers=None):
         p=Path(path)
-        if not p.is_file():raise FileNotFoundError(str(p))
+        if not p.is_file(): raise FileNotFoundError(str(p))
         h=dict(headers or {});h.setdefault('Content-Disposition',f'attachment; filename="{filename or p.name}"');h.setdefault('Content-Type',mimetypes.guess_type(p.name)[0] or 'application/octet-stream');return HTTPResponse(p.read_bytes(),status,headers=h)
     @staticmethod
     def stream(chunks,*,status=200,content_type='application/octet-stream',headers=None):return HTTPResponse(chunks,status,headers=headers,content_type=content_type)
