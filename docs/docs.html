@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PyAPIfy Docs</title><link rel="stylesheet" href="style.css"></head><body><header class="nav"><a class="brand" href="index.html">PyAPIfy</a><nav><a class="active" href="docs.html">Docs</a><a href="plugins.html">Plugins</a><a href="https://github.com/Leila150/PyAPIfy">GitHub</a></nav></header><main class="page"><div class="eyebrow">DOCUMENTATION</div><h1>PyAPIfy Docs</h1><p class="lead">The framework is built around one idea: declare information once and keep the common path simple.</p><h2>Quick start</h2><pre><code>from pyapify import PyAPIfy
+
+api = PyAPIfy()
+
+@api.get("/users/{id:int}")
+def user(id: int):
+    return {"id": id}
+
+api.run()</code></pre><h2>Core features</h2><div class="list"><div><b>Routing</b><span>Typed paths, HTTP methods, groups and named routes.</span></div><div><b>Requests</b><span>Query, headers, cookies, forms, files and JSON bodies.</span></div><div><b>Models</b><span>Typed models, validation, serialization and schemas.</span></div><div><b>Infrastructure</b><span>Middleware, dependencies, authentication, lifecycle and background tasks.</span></div><div><b>Realtime</b><span>WebSockets and Server-Sent Events.</span></div><div><b>Testing</b><span>In-process test client without starting a real server.</span></div><div><b>Plugins</b><span>Official extension API for adding PyAPIfy capabilities.</span></div></div><h2>Plugins</h2><p>A plugin is a PyAPIfy extension, not a general-purpose Python plugin. Extensions can add decorators, functions, hooks, route types, middleware, CLI commands, configuration, tests and custom run systems.</p><pre><code>from pyapify import Plugin
+
+plugin = Plugin()
+
+@plugin.create_decorator(name="cache")
+def cache(api, *args, **kwargs):
+    def decorator(fn):
+        return fn
+    return decorator</code></pre><p>Install a plugin by placing its directory under <code>.pyapify/plugins/</code>.</p></main><footer>PyAPIfy documentation · <a href="plugins.html">Plugin registry</a></footer></body></html>
