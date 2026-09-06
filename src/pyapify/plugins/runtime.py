@@ -141,12 +141,14 @@ class PyAPIfyRuntime:
         instance = super().__new__(cls)
         cls._instances[key] = instance
         instance._initialized = False
+        instance._closed = False
         return instance
 
     def __init__(self, root=None, *, max_logs=5):
-        if self._initialized:
+        if self._initialized and not self._closed:
             return
         self._initialized = True
+        self._closed = False
         self.root = Path(root).expanduser().resolve() if root else Path.cwd().resolve() / '.pyapify'
         self.max_logs = max(2, int(max_logs))
         self.plugins_dir = self.root / 'plugins'
@@ -202,10 +204,13 @@ class PyAPIfyRuntime:
         method(message, *args, **kwargs)
 
     def close(self):
+        if self._closed:
+            return
         for handler in list(self.logger.handlers):
             handler.flush()
             handler.close()
             self.logger.removeHandler(handler)
+        self._closed = True
 
     def clear_cache(self):
         self.log('info', 'Clearing PyAPIfy runtime cache')
