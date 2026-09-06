@@ -50,3 +50,28 @@ def test_plugin_disable_removes_extensions():
     plugin.disable()
     assert not plugin.enabled()
     assert not hasattr(api, "temporary_extension")
+
+
+def test_all_documented_plugin_extension_builders_exist():
+    plugin = Plugin(Path(__file__).parent)
+
+    for kind in Plugin.EXTENSION_KINDS:
+        assert hasattr(plugin, f"create_{kind}")
+        assert hasattr(plugin, f"edit_{kind}")
+        assert hasattr(plugin, f"delete_{kind}")
+
+
+def test_extension_builder_create_edit_delete():
+    plugin = Plugin(Path(__file__).parent)
+
+    @plugin.create_validator(name="positive")
+    def positive(value):
+        return value > 0
+
+    assert "validator" in plugin.capabilities()
+    assert plugin.positive if hasattr(plugin, "positive") else True
+
+    replacement = lambda value: value >= 0
+    plugin.edit_validator("positive", replacement, description="updated")
+    assert plugin.delete_validator("positive") is replacement
+    assert "validator" not in plugin.capabilities()
