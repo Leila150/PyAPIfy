@@ -12,6 +12,9 @@ class PluginManager:
         self.app = app
         self.plugins = {}
         self.runtime = PyAPIfyRuntime()
+        # Expose the project runtime directly on PyAPIfy without making the
+        # application constructor responsible for filesystem setup.
+        app.runtime = self.runtime
         self.runtime.log('info', 'PyAPIfy plugin runtime initialized at %s', self.runtime.root)
 
     @staticmethod
