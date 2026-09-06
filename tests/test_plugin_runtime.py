@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pyapify import PyAPIfy
+from pyapify import PyAPIfy, get_logger, log
 from pyapify.plugins import Plugin
 from pyapify.plugins.runtime import PyAPIfyRuntime
 
@@ -14,6 +14,31 @@ def test_runtime_creates_pyapify_tree(tmp_path):
     runtime.log('info', 'runtime test')
     runtime.close()
     assert (tmp_path / '.pyapify' / 'logs' / 'latest_log.txt').is_file()
+
+
+def test_runtime_reopens_logger_after_close(tmp_path):
+    root = tmp_path / '.pyapify'
+    first = PyAPIfyRuntime(root)
+    first.log('info', 'before close')
+    first.close()
+    second = PyAPIfyRuntime(root)
+    second.log('info', 'after reopen')
+    assert first is second
+    assert not second._closed
+    assert 'after reopen' in (root / 'logs' / 'latest_log.txt').read_text(encoding='utf-8')
+    second.close()
+
+
+def test_public_logging_helpers(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runtime = PyAPIfyRuntime(tmp_path / '.pyapify')
+    log('info', 'public helper test', component='tests')
+    logger = get_logger('tests')
+    logger.warning('logger helper test')
+    runtime.close()
+    content = (tmp_path / '.pyapify' / 'logs' / 'latest_log.txt').read_text(encoding='utf-8')
+    assert 'public helper test' in content
+    assert 'logger helper test' in content
 
 
 def test_plugin_cache_persists(tmp_path):
