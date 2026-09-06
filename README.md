@@ -2,31 +2,16 @@
 
 **Simple outside. Powerful inside.**
 
-PyAPIfy is a Python API framework designed around one idea: **building an API should feel like writing Python, not configuring a framework.**
+PyAPIfy is a Python application/API framework designed around one idea: **building with Python should feel like writing Python, not configuring a framework.**
 
-It takes the best developer ideas from lightweight web frameworks and modern typed API frameworks, while keeping PyAPIfy’s routing, request/response handling, server, validation and dispatch system independent.
+It provides routing, request/response handling, validation, middleware, authentication, WebSockets, SSE, testing, lifecycle tooling, a development server and a first-class extension system — while keeping its core runtime independent.
 
-## The goal
-
-A great API package should give you:
-
-- **Tiny everyday code** — routes should take one decorator and one function.
-- **Python-native typing** — use `int`, `str`, `bool`, models and normal function signatures.
-- **Power when you need it** — middleware, dependency injection, authentication, streaming, WebSockets, SSE, files and lifecycle hooks are available without changing the basic programming model.
-- **Excellent defaults** — JSON responses, errors, OpenAPI, testing and development tooling should work with little configuration.
-- **No framework maze** — the common path should be obvious, while advanced features remain discoverable.
-- **Independent internals** — PyAPIfy does not wrap Starlette or another web framework.
-
-## Hello API
+## Quick start
 
 ```python
 from pyapify import PyAPIfy
 
 api = PyAPIfy()
-
-@api.get('/')
-def home():
-    return {'message': 'Hello!'}
 
 @api.get('/users/{id:int}')
 def user(id: int):
@@ -35,197 +20,111 @@ def user(id: int):
 api.run()
 ```
 
-That's the normal PyAPIfy experience.
+## Plugin extensions
 
-## Request models
+PyAPIfy plugins exist **only to extend PyAPIfy**. They are not a general-purpose Python plugin system.
 
 ```python
-from pyapify import Model
+from pyapify import Plugin
 
-class User(Model):
-    username: str
-    age: int
+plugin = Plugin()
 
-@api.post('/users')
-def create_user(user: User):
-    return user.model_dump()
+@plugin.create_decorator(name='cache')
+def cache(api, *args, **kwargs):
+    def decorator(fn):
+        return fn
+    return decorator
 ```
 
-The function signature describes what the endpoint needs. PyAPIfy handles request extraction and validation.
-
-## Responses without ceremony
-
-Returning normal Python data is enough:
+After the plugin is registered with an application:
 
 ```python
-@api.get('/hello')
-def hello():
-    return {'message': 'hello'}
-```
+api.use(plugin)
 
-When you need control, use the same small `HTTP` object everywhere:
-
-```python
-from pyapify import HTTP
-
-@api.post('/users')
-def create_user(user: User):
-    return HTTP.created(user.model_dump())
-
-@api.get('/users/{id:int}')
-def get_user(id: int):
-    if id != 1:
-        raise HTTP.not_found(detail='User does not exist')
-    return {'id': id}
-```
-
-Available response tools include JSON, text, HTML, XML, bytes, files, streaming, SSE, redirects, cookies, headers and arbitrary HTTP status codes.
-
-## Dependencies
-
-Shared application logic stays clean:
-
-```python
-from pyapify import depends
-
-
-def current_user(request):
-    return authenticate(request)
-
-@api.get('/me')
-def me(user=depends(current_user)):
-    return user
-```
-
-Dependencies can be nested, synchronous or asynchronous, and can be cached per request.
-
-## Authentication
-
-Authentication is explicit and composable:
-
-```python
-API_KEY = 'secret'
-
-@api.get('/admin', auth=API_KEY)
-def admin():
+@api.cache()
+def data():
     return {'ok': True}
 ```
 
-Built-in authentication primitives include API keys, bearer tokens, basic authentication and JWT.
+The official extension API includes:
 
-## Middleware
+- decorators — `create_decorator`, `edit_decorator`, `delete_decorator`
+- functions — `create_function`, `edit_function`, `delete_function`
+- hooks — `create_hook`, `edit_hook`, `delete_hook`
+- route types — `create_route_type`, `edit_route_type`, `delete_route_type`
+- middleware — `create_middleware`, `edit_middleware`, `delete_middleware`
+- CLI commands — `create_command`, `edit_command`, `delete_command`
+- configuration — `create_config`, `edit_config`, `delete_config`
+- tests — `create_test`, `edit_test`, `delete_test`
+- custom run systems — `create_run`, `edit_run`, `delete_run`
+- additional extension categories through the same PyAPIfy extension registry
+
+## Plugin layout
+
+Plugins are manually installed under the PyAPIfy runtime directory:
+
+```text
+.pyapify/
+├── plugins/
+│   └── example_plugin/
+│       ├── main.py
+│       ├── info.json
+│       └── src/
+│           ├── __init__.py
+│           └── ...
+├── logs/
+│   ├── latest_log_5.txt
+│   ├── latest_log_4.txt
+│   ├── latest_log_3.txt
+│   ├── latest_log_2.txt
+│   └── latest_log.txt
+└── cache/
+    ├── plugins_cache/
+    ├── pyapify_cache/
+    └── ...
+```
+
+A plugin entry point can load files relative to its own directory:
 
 ```python
-@api.middleware
-async def logger(request, next):
-    print(request.method, request.path)
-    return await next(request)
+from pyapify import Plugin
+
+plugin = Plugin()
+example = plugin.load('src/__init__.py')
 ```
 
-Built-in middleware covers common API needs such as CORS, security headers, request IDs, timing and rate limiting.
+## Core features
 
-## WebSockets and SSE
-
-```python
-@api.websocket('/chat')
-async def chat(socket):
-    while True:
-        message = await socket.receive()
-        await socket.send(message)
-```
-
-```python
-@api.sse('/events')
-async def events():
-    yield {'message': 'hello'}
-```
-
-## Testing
-
-```python
-client = api.test()
-
-response = client.get('/')
-assert response.status_code == 200
-assert response.json()['message'] == 'Hello!'
-```
-
-No real server is required for basic endpoint tests.
-
-## Automatic API documentation
-
-PyAPIfy generates OpenAPI and exposes interactive documentation:
-
-- `/openapi.json`
-- `/docs`
-- `/redoc`
-
-Routes, typed parameters and models can contribute to the generated schema.
-
-## Development server
-
-```python
-api.run()
-```
-
-The development server is designed to be convenient: it binds to the local network, uses HTTPS by default with an automatically generated development certificate, and accepts your own certificate when needed.
-
-```python
-api.run(certfile='certificate.pem', keyfile='private-key.pem')
-```
-
-Plain HTTP is still explicit:
-
-```python
-api.run(https=False)
-```
-
-## CLI
-
-PyAPIfy also provides a development CLI for inspecting routes, validating projects, generating OpenAPI, running tests and other framework tasks.
-
-```bash
-pyapify dev app.py
-pyapify routes app.py
-pyapify openapi app.py
-pyapify test
-pyapify doctor
-```
-
-## What makes PyAPIfy different?
-
-The target is **not** to make developers learn 100 features before writing their first route.
-
-The target is:
-
-> **5 lines for a simple API. Serious infrastructure when the API grows.**
-
-A beginner can start with decorators and dictionaries. An experienced developer can progressively add models, dependencies, authentication, middleware, routers, streaming, WebSockets, plugins and production-oriented controls without replacing the programming model.
-
-## Architecture
-
-PyAPIfy owns its core runtime:
-
-- routing
-- HTTP request parsing
-- HTTP response handling
-- dispatch
-- validation/models
+- GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, TRACE and CONNECT routes
+- typed path converters and route names
+- query, header, cookie, form and file handling
+- typed request models and validation
+- JSON, text, HTML, XML, bytes, files, streaming and redirects
+- arbitrary HTTP status responses
 - dependency injection
 - middleware
 - authentication primitives
-- development server
-- testing client
-- OpenAPI generation
-- WebSocket transport
-- SSE
-- CLI
+- route groups/routers
+- WebSockets and SSE
+- lifecycle hooks
+- background tasks and interval scheduling
+- in-process testing
+- OpenAPI generation and interactive docs
+- development CLI
+- dependency-free HTTP server with automatic HTTPS development defaults
+- first-class PyAPIfy-only plugins
 
-Optional integrations can be layered on top without turning the core into a dependency-heavy framework.
+## Architecture
+
+PyAPIfy owns its core runtime instead of wrapping another web framework. Plugins sit above the core through a defined extension registry so extensions can add PyAPIfy capabilities without requiring developers to modify framework internals.
+
+## Website
+
+The repository contains the PyAPIfy website in `docs/`, including documentation and the plugin registry. A GitHub Pages workflow is included for deployment.
 
 ## Status
 
-PyAPIfy is under active development. The core developer experience is implemented, while advanced areas such as HTTP/2, richer OpenAPI generation, reload supervision, plugin discovery, metrics/tracing, additional authentication flows, database integrations and the `.api` language continue to be developed and tested.
+PyAPIfy is under active development. Advanced areas continue to be expanded and tested, including richer plugin discovery, production server capabilities, richer OpenAPI generation, metrics/tracing and the future `.api` language.
 
 ## License
 
