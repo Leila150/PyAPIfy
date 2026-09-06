@@ -2,6 +2,9 @@
 from __future__ import annotations
 import inspect, re
 from dataclasses import dataclass
+from ..logging import get_logger
+
+logger = get_logger("routing.route")
 
 _CONVERTERS = {
     "str": str,
@@ -18,12 +21,16 @@ def register_converter(name, converter):
     if not callable(converter):
         raise TypeError("Converter must be callable")
     _CONVERTERS[name] = converter
+    logger.info("Path converter registered: %s", name)
 
 
 def unregister_converter(name):
     if name in {"str", "int", "float", "path", "bool"}:
         raise ValueError(f"Cannot remove built-in converter: {name}")
-    return _CONVERTERS.pop(name, None)
+    result = _CONVERTERS.pop(name, None)
+    if result is not None:
+        logger.info("Path converter unregistered: %s", name)
+    return result
 
 
 @dataclass
@@ -45,6 +52,7 @@ class Route:
         def repl(match):
             name, typ = match.group(1), match.group(2) or "str"
             if typ not in _CONVERTERS:
+                logger.error("Unknown path converter: %s for route %s", typ, self.path)
                 raise ValueError(f"Unknown path converter: {typ}")
             self.param_names.append((name, typ))
             expression = {
@@ -57,12 +65,17 @@ class Route:
 
         pattern = re.sub(r"\{([A-Za-z_]\w*)(?::\s*([A-Za-z_]\w*))?\}", repl, pattern)
         self.regex = re.compile("^" + pattern.rstrip("/") + "/?$")
+        logger.debug("Route compiled: %s [%s]", self.path, ','.join(sorted(self.methods)))
 
     def match(self, path):
         match = self.regex.match(path)
         if not match:
             return None
-        return {name: _CONVERTERS[typ](match.group(name)) for name, typ in self.param_names}
+        try:
+            return {name: _CONVERTERS[typ](match.group(name)) for name, typ in self.param_names}
+        except Exception:
+            logger.exception("Route parameter conversion failed: %s %s", self.name, path)
+            raise
 
     def signature(self):
         return inspect.signature(self.endpoint)
