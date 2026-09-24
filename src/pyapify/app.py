@@ -87,8 +87,25 @@ class PyAPIfy:
         elif kind == 'permission': self.permissions[name] = value
         elif kind == 'error_handler': self.errors[name] = value
         elif kind == 'route_type': self.route_types[name] = value
-        elif kind == 'http_method': self.http_methods.add(name.upper())
-        elif kind == 'status_code': self.status_codes[name] = value
+        elif kind == 'http_method':
+            method = name.upper()
+            self.http_methods.add(method)
+            attr = method.lower()
+            if not hasattr(self, attr):
+                def custom_method(path, _method=method, **kw):
+                    return self.route(path, [_method], **kw)
+                custom_method.__name__ = attr
+                setattr(self, attr, custom_method)
+        elif kind == 'status_code':
+            code = meta.get('value', value)
+            if not isinstance(code, int) or isinstance(code, bool):
+                if callable(value):
+                    code = value()
+            if not isinstance(code, int) or isinstance(code, bool):
+                raise TypeError(f'Custom status code must resolve to an integer: {name}')
+            self.status_codes[name] = validate_status(code)
+            setattr(HTTP, name.upper(), self.status_codes[name])
+            setattr(HTTP, name.lower(), self._make_status_shortcut(self.status_codes[name]))
         elif kind in ('request_handler','response_type'): getattr(self, kind+'s')[name] = value
         elif kind in ('task','schedule'): getattr(self, kind+'s')[name] = value
         elif kind == 'openapi': self.openapi_extensions[name] = value
@@ -123,8 +140,21 @@ class PyAPIfy:
         elif kind == 'permission': self.permissions.pop(name, None)
         elif kind == 'error_handler': self.errors.pop(name, None)
         elif kind == 'route_type': self.route_types.pop(name, None)
-        elif kind == 'http_method': self.http_methods.discard(name.upper())
-        elif kind == 'status_code': self.status_codes.pop(name, None)
+        elif kind == 'http_method':
+            method = name.upper()
+            self.http_methods.discard(method)
+            attr = method.lower()
+            if method not in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'):
+                current = getattr(self, attr, None)
+                if current is not None and getattr(current, '__name__', None) == attr:
+                    delattr(self, attr)
+        elif kind == 'status_code':
+            self.status_codes.pop(name, None)
+            upper, lower = name.upper(), name.lower()
+            if hasattr(HTTP, upper):
+                delattr(HTTP, upper)
+            if hasattr(HTTP, lower):
+                delattr(HTTP, lower)
         elif kind in ('request_handler','response_type'): getattr(self, kind+'s').pop(name, None)
         elif kind in ('task','schedule'): getattr(self, kind+'s').pop(name, None)
         elif kind == 'openapi': self.openapi_extensions.pop(name, None)
@@ -146,6 +176,22 @@ class PyAPIfy:
     def plugin_extensions(self, kind=None):
         if kind is None: return {k: dict(v) for k,v in self._plugin_extensions.items()}
         return dict(self._plugin_extensions.get(kind, {}))
+
+    @staticmethod
+    def _make_status_shortcut(code):
+        def shortcut(data=None, *, detail=None, headers=None):
+            return HTTPResponse(data, code, detail=detail, headers=headers)
+        return shortcut
+
+    def status_code(self, code=200, *, detail=None, headers=None, data=None):
+        if isinstance(code, str):
+            if code in self.status_codes:
+                code = self.status_codes[code]
+            elif hasattr(HTTP, code.upper()):
+                code = getattr(HTTP, code.upper())
+            else:
+                raise KeyError(f'Unknown HTTP status code: {code}')
+        return HTTP.status_code(data=data, code=code, detail=detail, headers=headers)
 
     def route(self, path, methods=None, *, route_name=None, name=None, **opts):
         methods = methods or ['GET']; logical_name = route_name or name
