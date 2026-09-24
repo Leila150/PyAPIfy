@@ -42,6 +42,8 @@ class Route:
     auth: object = None
     tags: tuple = ()
     websocket: bool = False
+    validators: object = None
+    permission: object = None
 
     def __post_init__(self):
         self.methods = {m.upper() for m in self.methods}
