@@ -259,3 +259,49 @@ def test_plugin_websocket_extension_is_registered_for_transport():
     plugin.create_websocket(name='transport_hook')(websocket_extension)
     api.use(plugin)
     assert api.websocket_extensions['transport_hook'] is websocket_extension
+
+
+@pytest.mark.asyncio
+async def test_plugin_html_css_js_gui_extensions_transform_matching_responses():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+
+    @plugin.create_html(name='html_extension')
+    def html_extension(response, request):
+        response.headers['X-HTML-Plugin'] = 'enabled'
+        return response
+
+    @plugin.create_css(name='css_extension')
+    def css_extension(response, request):
+        response.headers['X-CSS-Plugin'] = 'enabled'
+        return response
+
+    @plugin.create_js(name='js_extension')
+    def js_extension(response, request):
+        response.headers['X-JS-Plugin'] = 'enabled'
+        return response
+
+    @plugin.create_gui(name='gui_extension')
+    def gui_extension(response, request):
+        response.headers['X-GUI-Plugin'] = 'enabled'
+        return response
+
+    api.use(plugin)
+
+    @api.html('/page')
+    def page(): return '<h1>Hello</h1>'
+
+    @api.css('/style.css')
+    def style(): return 'body { margin: 0; }'
+
+    @api.js('/app.js')
+    def script(): return 'console.log(1);'
+
+    @api.gui('/gui')
+    def gui_page(): return 'gui'
+
+    client = api.test()
+    assert client.get('/page').headers['X-HTML-Plugin'] == 'enabled'
+    assert client.get('/style.css').headers['X-CSS-Plugin'] == 'enabled'
+    assert client.get('/app.js').headers['X-JS-Plugin'] == 'enabled'
+    assert client.get('/gui').headers['X-GUI-Plugin'] == 'enabled'
