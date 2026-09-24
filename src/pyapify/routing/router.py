@@ -13,9 +13,9 @@ class Router:
         self.routes = []
         logger.debug("Router created: prefix=%r tags=%r", self.prefix, self.tags)
 
-    def add(self, path, endpoint, methods=('GET',), name=None, auth=None, tags=(), websocket=False):
+    def add(self, path, endpoint, methods=('GET',), name=None, auth=None, tags=(), websocket=False, validators=None, permission=None):
         full = (self.prefix + ('/' if not path.startswith('/') else '') + path) or '/'
-        r = Route(full, endpoint, set(methods), name, self.auth if auth is None else auth, self.tags + tuple(tags), websocket)
+        r = Route(full, endpoint, set(methods), name, self.auth if auth is None else auth, self.tags + tuple(tags), websocket, validators, permission)
         self.routes.append(r)
         logger.info("Route registered: %s %s -> %s", ','.join(sorted(r.methods)), full, r.name)
         return r
