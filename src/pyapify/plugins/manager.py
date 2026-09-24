@@ -36,8 +36,7 @@ class PluginManager:
 
     def dependency_status(self, name):
         plugin = self.require(name)
-        required = []
-        optional = []
+        required, optional = [], []
         for raw in plugin.dependencies():
             dep_name, requirement = dependency_parts(raw)
             found = self.plugins.get(dep_name)
@@ -135,6 +134,23 @@ class PluginManager:
 
     def loaded(self, name): return name in self.plugins
     def enabled(self, name): return bool(self.require(name).enabled())
+
+    def state(self, name):
+        plugin = self.require(name)
+        return {
+            "name": plugin.name(),
+            "version": plugin.version(),
+            "path": str(plugin.path()),
+            "loaded": self.loaded(name),
+            "enabled": plugin.enabled(),
+            "registered": plugin.is_registered(),
+            "capabilities": tuple(sorted(plugin.capabilities())),
+            "dependencies": self.dependency_status(name),
+        }
+
+    def states(self):
+        return {name: self.state(name) for name in self.plugins}
+
     def capabilities(self): return {cap for p in self.plugins.values() for cap in p.capabilities()}
     def extension_map(self): return {name: p.capabilities() for name, p in self.plugins.items()}
     def list(self): return tuple(self.plugins.values())
@@ -150,10 +166,6 @@ class PluginManager:
                 target.relative_to(destination)
             except ValueError:
                 raise ValueError(f"Unsafe plugin archive path: {member.filename}")
-            if member.is_dir():
-                continue
-            if target.exists() and target.is_symlink():
-                raise ValueError(f"Unsafe plugin archive symlink: {member.filename}")
         return True
 
     def _extract_zip(self, archive_path, destination):
@@ -167,13 +179,6 @@ class PluginManager:
         root = Path(root)
         if not (root / "main.py").is_file():
             raise FileNotFoundError(f"Plugin entry point not found: {root / 'main.py'}")
-        metadata = root / "info.json"
-        if metadata.exists():
-            probe = Plugin(root)
-            if not probe.name().strip():
-                raise ValueError("Plugin metadata contains an empty name")
-            if not probe.version().strip():
-                raise ValueError("Plugin metadata contains an empty version")
         return root
 
     def install(self, source, *, name=None, overwrite=False):
@@ -250,26 +255,18 @@ class PluginManager:
     async def startup(self):
         for name in self.check_dependencies():
             plugin = self.plugins[name]
-            try:
-                result = plugin.startup(self.app)
-                if hasattr(result, "__await__"):
-                    await result
-                self.runtime.log("info", "Plugin started: %s", name)
-            except Exception:
-                self.runtime.logger.exception("Plugin startup failed: %s", name)
-                raise
+            result = plugin.startup(self.app)
+            if hasattr(result, "__await__"):
+                await result
+            self.runtime.log("info", "Plugin started: %s", name)
 
     async def shutdown(self):
         for name in reversed(self.check_dependencies()):
             plugin = self.plugins[name]
-            try:
-                result = plugin.shutdown(self.app)
-                if hasattr(result, "__await__"):
-                    await result
-                self.runtime.log("info", "Plugin stopped: %s", name)
-            except Exception:
-                self.runtime.logger.exception("Plugin shutdown failed: %s", name)
-                raise
+            result = plugin.shutdown(self.app)
+            if hasattr(result, "__await__"):
+                await result
+            self.runtime.log("info", "Plugin stopped: %s", name)
         self.runtime.close()
 
     def remove(self, name): return self.uninstall(name)
