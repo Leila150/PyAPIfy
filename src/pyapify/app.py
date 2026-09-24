@@ -487,13 +487,44 @@ class PyAPIfy:
             async def wrapped(req, mw=mw, previous=previous):
                 result = mw(req, previous); return await result if inspect.isawaitable(result) else result
             nxt = wrapped
-        try: return await nxt(request)
-        except HTTPResponse as e: return e
+        try:
+            return await nxt(request)
+        except HTTPResponse as e:
+            return e
         except Exception as e:
-            handler = self.errors.get(type(e)) or self.errors.get(500) or self.errors.get('*')
+            handler = self._resolve_error_handler(e)
             if handler:
-                result = handler(e); result = await result if inspect.isawaitable(result) else result; return result if isinstance(result,HTTPResponse) else HTTPResponse(result,500)
+                try:
+                    result = handler(e)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result if isinstance(result, HTTPResponse) else HTTPResponse(result, 500)
+                except Exception as handler_error:
+                    if self.debug:
+                        return HTTPResponse({'error': type(handler_error).__name__, 'detail': str(handler_error)}, 500)
             return HTTPResponse({'error':type(e).__name__,'detail':str(e)} if self.debug else {'detail':'Internal server error'},500)
+    def _resolve_error_handler(self, error):
+        """Resolve a plugin or application error handler deterministically.
+
+        Exact exception type wins, followed by registered base exception
+        classes, then a handler registered under the exception class name,
+        and finally the wildcard/500 fallback.
+        """
+        error_type = type(error)
+        handler = self.errors.get(error_type)
+        if handler is not None:
+            return handler
+
+        for base in error_type.__mro__[1:]:
+            handler = self.errors.get(base)
+            if handler is not None:
+                return handler
+
+        handler = self.errors.get(error_type.__name__)
+        if handler is not None:
+            return handler
+        return self.errors.get('*') or self.errors.get(500)
+
     def test(self): from .testing.client import TestClient; return TestClient(self)
     def openapi(self):
         from .validation.models import Model
