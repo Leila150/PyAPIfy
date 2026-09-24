@@ -214,19 +214,58 @@ class Plugin:
         if self._app is not None: self.bind(self._app)
         return self
     def unregister(self):
-        if self._app is not None:
-            for kind,items in self._registry.items():
-                for name in list(items): self._detach(kind,name)
-        self._registered=False; self._started=False; return self
-    def enable(self):
-        self._enabled=True
-        if self._app is not None: self.bind(self._app)
+        if self._app is not None and self._registered:
+            detached=[]
+            try:
+                for kind,items in self._registry.items():
+                    for name in list(items):
+                        self._detach(kind,name)
+                        detached.append((kind,name))
+            except Exception:
+                for kind,name in detached:
+                    try:
+                        item=self._registry[kind][name]
+                        self._attach(kind,name,item['value'],item)
+                    except Exception:
+                        pass
+                raise
+        self._registered=False
+        self._started=False
         return self
+
+    def enable(self):
+        if self._enabled:
+            return self
+        self._enabled=True
+        try:
+            if self._app is not None:
+                self.bind(self._app)
+        except Exception:
+            self._enabled=False
+            raise
+        return self
+
     def disable(self):
-        if self._enabled and self._app is not None:
-            for kind,items in self._registry.items():
-                for name in list(items): self._detach(kind,name)
-        self._enabled=False; self._started=False; return self
+        if not self._enabled:
+            return self
+        if self._app is not None:
+            detached=[]
+            try:
+                for kind,items in self._registry.items():
+                    for name in list(items):
+                        self._detach(kind,name)
+                        detached.append((kind,name))
+            except Exception:
+                for kind,name in detached:
+                    try:
+                        item=self._registry[kind][name]
+                        self._attach(kind,name,item['value'],item)
+                    except Exception:
+                        pass
+                raise
+        self._enabled=False
+        self._started=False
+        return self
     def enabled(self): return self._enabled
     def is_registered(self): return self._registered
     def started(self): return self._started
@@ -258,8 +297,16 @@ class Plugin:
         target=app or self._app
         if target is not None:
             for kind,items in self._registry.items():
-                for name in list(items): target._unregister_plugin_extension(kind,name,self)
-        self._app=None; self._registered=False; self._started=False; return self
+                for name in list(items):
+                    target._unregister_plugin_extension(kind,name,self)
+        for module_name in list(sys.modules):
+            if module_name.startswith(f'pyapify_plugin_{self.name()}_'):
+                sys.modules.pop(module_name, None)
+        self._loaded.clear()
+        self._app=None
+        self._registered=False
+        self._started=False
+        return self
     def capabilities(self): return set(self._registry)
 
 
