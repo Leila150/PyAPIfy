@@ -1,6 +1,6 @@
 """PyAPIfy application runtime and extension integration."""
 from __future__ import annotations
-import inspect, typing, types
+import inspect, typing, types, asyncio
 from .routing.router import Router
 from .http.request import Request
 from .http.response import HTTPResponse, HTTP
@@ -53,6 +53,7 @@ class PyAPIfy:
         self.plugins, self.plugin_manager = [], PluginManager(self)
         self.auth, self.max_body_size = auth, max_body_size
         self._started = False
+        self._schedule_tasks = {}
         self._plugin_extensions, self._plugin_hooks = {}, {}
         self.validators, self.model_types, self.dependencies = {}, {}, {}
         self.auth_providers, self.permissions = {}, {}
@@ -110,7 +111,13 @@ class PyAPIfy:
             setattr(HTTP, name.upper(), self.status_codes[name])
             setattr(HTTP, name.lower(), self._make_status_shortcut(self.status_codes[name]))
         elif kind in ('request_handler','response_type'): getattr(self, kind+'s')[name] = value
-        elif kind in ('task','schedule'): getattr(self, kind+'s')[name] = value
+        elif kind == 'task': self.tasks[name] = value
+        elif kind == 'schedule':
+            self.schedules[name] = value
+            if self._started:
+                item = self._plugin_extensions.get('schedule', {}).get(name)
+                meta = item[2] if item else {}
+                self._schedule_tasks[name] = asyncio.create_task(self._run_plugin_schedule(name, value, meta))
         elif kind == 'openapi': self.openapi_extensions[name] = value
         elif kind == 'documentation': self.documentation[name] = value
         elif kind in ('websocket','sse','html','css','js','gui'): getattr(self, kind+'_extensions')[name] = value
@@ -159,7 +166,11 @@ class PyAPIfy:
             if code is not None and getattr(HTTP, lower, None) is not None:
                 delattr(HTTP, lower)
         elif kind in ('request_handler','response_type'): getattr(self, kind+'s').pop(name, None)
-        elif kind in ('task','schedule'): getattr(self, kind+'s').pop(name, None)
+        elif kind == 'task': self.tasks.pop(name, None)
+        elif kind == 'schedule':
+            self.schedules.pop(name, None)
+            task = self._schedule_tasks.pop(name, None)
+            if task is not None and not task.done(): task.cancel()
         elif kind == 'openapi': self.openapi_extensions.pop(name, None)
         elif kind == 'documentation': self.documentation.pop(name, None)
         elif kind in ('websocket','sse','html','css','js','gui'): getattr(self, kind+'_extensions').pop(name, None)
@@ -226,10 +237,33 @@ class PyAPIfy:
     async def _lifecycle(self, funcs):
         for fn in funcs:
             result = fn(); result = await result if inspect.isawaitable(result) else result
+    async def _run_plugin_schedule(self, name, value, meta):
+        days = meta.get('days', 0); hours = meta.get('hours', 0); minutes = meta.get('minutes', 0)
+        seconds = meta.get('seconds', meta.get('interval', 0))
+        try: interval = days * 86400 + hours * 3600 + minutes * 60 + seconds
+        except TypeError: raise TypeError(f'Invalid schedule interval for plugin schedule: {name}')
+        if interval < 0: raise ValueError(f'Schedule interval cannot be negative: {name}')
+        while True:
+            result = value()
+            if inspect.isawaitable(result): await result
+            await asyncio.sleep(interval)
+
+    def _start_plugin_schedules(self):
+        for name, value in self.schedules.items():
+            if name in self._schedule_tasks: continue
+            item = self._plugin_extensions.get('schedule', {}).get(name)
+            meta = item[2] if item else {}
+            self._schedule_tasks[name] = asyncio.create_task(self._run_plugin_schedule(name, value, meta))
+
+    async def _stop_plugin_schedules(self):
+        tasks = list(self._schedule_tasks.values()); self._schedule_tasks.clear()
+        for task in tasks:
+            if not task.done(): task.cancel()
+        if tasks: await asyncio.gather(*tasks, return_exceptions=True)
     async def startup_async(self):
-        if not self._started: await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._started = True
+        if not self._started: await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._start_plugin_schedules(); self._started = True
     async def shutdown_async(self):
-        if self._started: await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started = False
+        if self._started: await self._stop_plugin_schedules(); await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started = False
     async def _resolve_dependency(self, dep, request, cache):
         if dep.use_cache and dep.dependency in cache: return cache[dep.dependency]
         fn, kwargs = dep.dependency, {}
