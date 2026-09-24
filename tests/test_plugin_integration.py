@@ -181,3 +181,25 @@ def test_plugin_converter_is_live_in_router():
 
     plugin.disable()
     assert 'lower' not in api.plugin_extensions('converter')
+
+
+def test_plugin_route_type_is_live():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+
+    @plugin.create_route_type(name='api_prefix')
+    def api_prefix(path):
+        return '/api' + (path if path.startswith('/') else '/' + path)
+
+    api.use(plugin)
+
+    @api.get('/items', route_type='api_prefix')
+    def items():
+        return 'ok'
+
+    response = api.test().get('/api/items')
+    assert response.status == 200
+    assert response.data == 'ok'
+
+    missing = api.test().get('/items')
+    assert missing.status == 404
