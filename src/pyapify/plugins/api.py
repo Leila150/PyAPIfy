@@ -141,10 +141,13 @@ class Plugin:
         previous_app=self._app
         previous_registered=self._registered
         attached=[]
+        added_used=[]
         try:
             self._app=app
             for used in self._used_plugins:
-                if used not in app.plugins: app.use(used)
+                if used not in app.plugins:
+                    app.use(used)
+                    added_used.append(used)
             if self._enabled:
                 for kind,items in self._registry.items():
                     for name,item in items.items():
@@ -156,6 +159,12 @@ class Plugin:
             for kind,name in reversed(attached):
                 try:
                     app._unregister_plugin_extension(kind,name,self)
+                except Exception:
+                    pass
+            for used in reversed(added_used):
+                try:
+                    if used in app.plugins:
+                        app.plugins.remove(used)
                 except Exception:
                     pass
             self._app=previous_app
@@ -295,10 +304,22 @@ class Plugin:
         return None
     def uninstall(self,app=None):
         target=app or self._app
-        if target is not None:
-            for kind,items in self._registry.items():
-                for name in list(items):
-                    target._unregister_plugin_extension(kind,name,self)
+        detached=[]
+        try:
+            if target is not None:
+                for kind,items in self._registry.items():
+                    for name in list(items):
+                        target._unregister_plugin_extension(kind,name,self)
+                        detached.append((kind,name))
+        except Exception:
+            if target is not None:
+                for kind,name in reversed(detached):
+                    try:
+                        item=self._registry[kind][name]
+                        target._register_plugin_extension(kind,name,item['value'],item,self)
+                    except Exception:
+                        pass
+            raise
         for module_name in list(sys.modules):
             if module_name.startswith(f'pyapify_plugin_{self.name()}_'):
                 sys.modules.pop(module_name, None)
@@ -307,6 +328,16 @@ class Plugin:
         self._registered=False
         self._started=False
         return self
+    def state(self):
+        return {
+            'name': self.name(),
+            'version': self.version(),
+            'path': str(self.path()),
+            'enabled': self.enabled(),
+            'registered': self.is_registered(),
+            'started': self.started(),
+            'capabilities': tuple(sorted(self.capabilities())),
+        }
     def capabilities(self): return set(self._registry)
 
 
