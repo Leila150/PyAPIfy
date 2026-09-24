@@ -199,7 +199,7 @@ class PyAPIfy:
     def route(self, path, methods=None, *, route_name=None, name=None, **opts):
         methods = methods or ['GET']; logical_name = route_name or name
         def deco(fn):
-            self.router.add(path, fn, methods, name=logical_name, auth=opts.get('auth', self.auth), tags=opts.get('tags', ()), websocket=opts.get('websocket', False), validators=opts.get('validators', opts.get('validate')), permission=opts.get('permission')); return fn
+            self.router.add(path, fn, methods, name=logical_name, auth=opts.get('auth', self.auth), tags=opts.get('tags', ()), websocket=opts.get('websocket', False), validators=opts.get('validators', opts.get('validate')), permission=opts.get('permission'), route_type=self._resolve_extension(self.route_types, opts.get('route_type'))); return fn
         return deco
     def any(self, path, **opts): return self.route(path, ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'], **opts)
     def sse(self, path, **opts):
