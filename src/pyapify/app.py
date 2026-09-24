@@ -199,7 +199,7 @@ class PyAPIfy:
     def route(self, path, methods=None, *, route_name=None, name=None, **opts):
         methods = methods or ['GET']; logical_name = route_name or name
         def deco(fn):
-            self.router.add(path, fn, methods, name=logical_name, auth=opts.get('auth', self.auth), tags=opts.get('tags', ()), websocket=opts.get('websocket', False)); return fn
+            self.router.add(path, fn, methods, name=logical_name, auth=opts.get('auth', self.auth), tags=opts.get('tags', ()), websocket=opts.get('websocket', False), validators=opts.get('validators', opts.get('validate')), permission=opts.get('permission')); return fn
         return deco
     def any(self, path, **opts): return self.route(path, ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'], **opts)
     def sse(self, path, **opts):
@@ -268,10 +268,59 @@ class PyAPIfy:
             elif _is_optional(ann): kwargs[name] = None
             else: raise TypeError(f'Missing required parameter: {name}')
         result = fn(**kwargs); result = await result if inspect.isawaitable(result) else result; return result, bg
+    def _resolve_extension(self, registry, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            if value not in registry:
+                raise KeyError(f'Unknown PyAPIfy extension: {value}')
+            return registry[value]
+        return value
+
+    async def _permission_async(self, permission, request):
+        permission = self._resolve_extension(self.permissions, permission)
+        if permission is None:
+            return True
+        result = permission(request) if callable(permission) else bool(permission)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
+    async def _validate_async(self, validators, value):
+        if validators is None:
+            return value
+        if isinstance(validators, str):
+            validators = [validators]
+        if isinstance(validators, dict):
+            items = validators.items()
+        else:
+            items = ((None, item) for item in validators)
+        result = value
+        for field, validator in items:
+            validator = self._resolve_extension(self.validators, validator)
+            if validator is None:
+                continue
+            target = result
+            if field is not None and isinstance(result, dict):
+                if field not in result:
+                    raise ValueError(f'Missing value for validation: {field}')
+                target = result[field]
+            checked = validator(target)
+            if inspect.isawaitable(checked):
+                checked = await checked
+            if checked is False:
+                raise ValueError(f'Validation failed{f": {field}" if field else ""}')
+            if field is not None and isinstance(result, dict) and checked is not True and checked is not None:
+                result[field] = checked
+            elif field is None and checked is not True and checked is not None:
+                result = checked
+        return result
+
     async def _auth_async(self, auth, request):
         if auth is None: return True
         providers = auth if isinstance(auth,(list,tuple,set)) else [auth]
         for provider in providers:
+            provider = self._resolve_extension(self.auth_providers, provider)
             result = provider.authenticate(request) if hasattr(provider,'authenticate') else provider(request) if callable(provider) else ((request.headers.get('Authorization') or request.headers.get('X-API-Key')) in (provider, f'Bearer {provider}'))
             if inspect.isawaitable(result): result = await result
             if result: return True
@@ -284,6 +333,12 @@ class PyAPIfy:
             return HTTP.status_code(code=405, detail='Method not allowed', headers={'Allow': ', '.join(sorted(methods))}) if methods else HTTP.status_code(code=404, detail='Not found')
         if route.websocket: return HTTP.status_code(code=426, detail='WebSocket upgrade required', headers={'Upgrade':'websocket'})
         if not await self._auth_async(route.auth, request): return HTTP.status_code(code=401, detail='Authentication required', headers={'WWW-Authenticate':'Bearer'})
+        if not await self._permission_async(route.permission, request): return HTTP.status_code(code=403, detail='Permission denied')
+        if route.validators is not None:
+            try:
+                await self._validate_async(route.validators, params)
+            except Exception as exc:
+                return HTTP.status_code(code=422, detail=str(exc))
         async def terminal(req):
             result, bg = await self._call(route.endpoint, req, params); response = result if isinstance(result, HTTPResponse) else HTTPResponse(result); await bg.run(); return response
         nxt = terminal
