@@ -137,6 +137,11 @@ class PluginManager:
 
     def started(self, name): return self.require(name).started()
 
+    def dependencies(self, name):
+        plugin = self.require(name)
+        return tuple(dependency_parts(dep)[0] for dep in plugin.dependencies()
+                     if dependency_parts(dep)[0])
+
     def dependents(self, name):
         self.require(name)
         return tuple(plugin.name() for plugin in self.plugins.values()
@@ -144,13 +149,37 @@ class PluginManager:
 
     def start(self, name):
         plugin = self.require(name)
-        self.check_dependencies()
+        order = self.check_dependencies()
+        dependencies = self.dependencies(name)
+        for dependency in dependencies:
+            if dependency in self.plugins and not self.plugins[dependency].started():
+                result = self.start(dependency)
+                if hasattr(result, "__await__"):
+                    async def finish_dependency(previous=result, target=plugin):
+                        await previous
+                        pending = target.startup(self.app)
+                        if hasattr(pending, "__await__"):
+                            await pending
+                        self.runtime.log("info", "Plugin started: %s", target.name())
+                    return finish_dependency()
         result = plugin.startup(self.app)
         self.runtime.log("info", "Plugin start requested: %s", name)
         return result
 
     def stop(self, name):
         plugin = self.require(name)
+        for dependent in self.dependents(name):
+            child = self.plugins[dependent]
+            if child.started():
+                result = self.stop(dependent)
+                if hasattr(result, "__await__"):
+                    async def finish_dependent(previous=result, target=plugin):
+                        await previous
+                        pending = target.shutdown(self.app)
+                        if hasattr(pending, "__await__"):
+                            await pending
+                        self.runtime.log("info", "Plugin stopped: %s", target.name())
+                    return finish_dependent()
         result = plugin.shutdown(self.app)
         self.runtime.log("info", "Plugin stop requested: %s", name)
         return result
