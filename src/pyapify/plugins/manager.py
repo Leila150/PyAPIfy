@@ -135,6 +135,26 @@ class PluginManager:
     def loaded(self, name): return name in self.plugins
     def enabled(self, name): return bool(self.require(name).enabled())
 
+    def started(self, name): return self.require(name).started()
+
+    def dependents(self, name):
+        self.require(name)
+        return tuple(plugin.name() for plugin in self.plugins.values()
+                     if any(dependency_parts(dep)[0] == name for dep in plugin.dependencies()))
+
+    def start(self, name):
+        plugin = self.require(name)
+        self.check_dependencies()
+        result = plugin.startup(self.app)
+        self.runtime.log("info", "Plugin start requested: %s", name)
+        return result
+
+    def stop(self, name):
+        plugin = self.require(name)
+        result = plugin.shutdown(self.app)
+        self.runtime.log("info", "Plugin stop requested: %s", name)
+        return result
+
     def state(self, name):
         plugin = self.require(name)
         return {
@@ -212,7 +232,13 @@ class PluginManager:
         self.runtime.log("info", "Plugin installed: %s", destination)
         return destination
 
-    def uninstall(self, name, *, remove_cache=True):
+    def uninstall(self, name, *, remove_cache=True, force=False):
+        plugin = self.plugins.get(name)
+        if plugin is None and not (self._directory() / name).exists():
+            raise KeyError(f"Plugin is not installed: {name}")
+        dependents = self.dependents(name) if plugin is not None else ()
+        if dependents and not force:
+            raise RuntimeError(f"Cannot uninstall {name}; loaded plugins depend on it: {', '.join(dependents)}")
         plugin = self.plugins.pop(name, None)
         if plugin is not None:
             plugin.uninstall(self.app)
