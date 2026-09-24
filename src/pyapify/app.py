@@ -197,6 +197,31 @@ class PyAPIfy:
             return HTTPResponse(data, code, detail=detail, headers=headers)
         return shortcut
 
+    @staticmethod
+    def _call_response_extension(extension, response, request):
+        """Call a response extension using its declared callable signature.
+
+        Extensions may accept (response, request), (response), or no arguments.
+        Signature inspection avoids catching TypeError raised by the extension
+        itself and accidentally invoking it a second time.
+        """
+        try:
+            signature = inspect.signature(extension)
+        except (TypeError, ValueError):
+            return extension(response, request)
+
+        candidates = ((response, request), (response,), ())
+        for args in candidates:
+            try:
+                signature.bind(*args)
+            except TypeError:
+                continue
+            return extension(*args)
+        raise TypeError(
+            f"Response extension {getattr(extension, '__name__', repr(extension))} "
+            "must accept (response, request), (response), or no arguments"
+        )
+
     def status_code(self, code=200, *, detail=None, headers=None, data=None):
         if isinstance(code, str):
             if code in self.status_codes:
@@ -449,16 +474,12 @@ class PyAPIfy:
                 extension_sets.append(self.gui_extensions)
             for extensions in extension_sets:
                 for name, extension in extensions.items():
-                    try:
-                        transformed = extension(response, req)
-                    except TypeError:
-                        transformed = extension()
+                    transformed = self._call_response_extension(extension, response, req)
                     if inspect.isawaitable(transformed):
                         transformed = await transformed
                     if transformed is not None:
                         response = transformed if isinstance(transformed, HTTPResponse) else HTTPResponse(transformed)
             await bg.run()
-            return response
             return response
         nxt = terminal
         for mw in reversed(self._middleware):
