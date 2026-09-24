@@ -98,33 +98,69 @@ class Plugin:
         if kind=='converter' and key in self.BUILTIN_CONVERTERS: raise ValueError(f'Cannot replace built-in converter: {key}')
         bucket=self._registry.setdefault(kind,{})
         if key in bucket: raise ValueError(f'{kind} already exists: {key}')
-        bucket[key]={'value':value,**meta}; self._attach(kind,key,value,bucket[key]); return value
+        item={'value':value,**meta}
+        bucket[key]=item
+        try:
+            self._attach(kind,key,value,item)
+        except Exception:
+            bucket.pop(key,None)
+            raise
+        return value
 
     def _edit(self,kind,name,value=None,**meta):
         bucket=self._registry.setdefault(kind,{})
         if name not in bucket: raise KeyError(f'Unknown {kind}: {name}')
         if kind=='converter' and name in self.BUILTIN_CONVERTERS: raise ValueError(f'Cannot edit built-in converter: {name}')
-        if value is not None: bucket[name]['value']=value
-        bucket[name].update(meta); self._attach(kind,name,bucket[name]['value'],bucket[name]); return bucket[name]['value']
+        item=bucket[name]
+        previous=dict(item)
+        if value is not None: item['value']=value
+        item.update(meta)
+        try:
+            self._attach(kind,name,item['value'],item)
+        except Exception:
+            item.clear()
+            item.update(previous)
+            raise
+        return item['value']
 
     def _delete(self,kind,name):
         bucket=self._registry.setdefault(kind,{})
         if kind=='converter' and name in self.BUILTIN_CONVERTERS: raise ValueError(f'Cannot delete built-in converter: {name}')
-        item=bucket.pop(name,None)
+        item=bucket.get(name)
         if item is None: raise KeyError(f'Unknown {kind}: {name}')
-        self._detach(kind,name); return item['value']
+        self._detach(kind,name)
+        bucket.pop(name,None)
+        return item['value']
 
     def _attach(self,kind,name,value,meta):
         if self._app is not None and self._enabled: self._app._register_plugin_extension(kind,name,value,meta,self)
     def _detach(self,kind,name):
         if self._app is not None: self._app._unregister_plugin_extension(kind,name,self)
+
     def bind(self,app):
-        self._app=app; self._registered=True
-        for used in self._used_plugins:
-            if used not in app.plugins: app.use(used)
-        for kind,items in self._registry.items():
-            for name,item in items.items(): self._attach(kind,name,item['value'],item)
-        return self
+        previous_app=self._app
+        previous_registered=self._registered
+        attached=[]
+        try:
+            self._app=app
+            for used in self._used_plugins:
+                if used not in app.plugins: app.use(used)
+            if self._enabled:
+                for kind,items in self._registry.items():
+                    for name,item in items.items():
+                        self._attach(kind,name,item['value'],item)
+                        attached.append((kind,name))
+            self._registered=True
+            return self
+        except Exception:
+            for kind,name in reversed(attached):
+                try:
+                    app._unregister_plugin_extension(kind,name,self)
+                except Exception:
+                    pass
+            self._app=previous_app
+            self._registered=previous_registered
+            raise
     def _decorator(self,kind,name=None,**meta):
         def register(value): return self._create(kind,name,value,**meta)
         return register
