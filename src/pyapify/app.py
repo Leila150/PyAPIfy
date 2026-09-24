@@ -213,13 +213,46 @@ class PyAPIfy:
             self.router.add(path, fn, methods, name=logical_name, auth=opts.get('auth', self.auth), tags=opts.get('tags', ()), websocket=opts.get('websocket', False), validators=opts.get('validators', opts.get('validate')), permission=opts.get('permission'), route_type=self._resolve_extension(self.route_types, opts.get('route_type'))); return fn
         return deco
     def any(self, path, **opts): return self.route(path, ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS','TRACE','CONNECT'], **opts)
+    def _specialized(self, path, kind, content_type, **opts):
+        def deco(fn):
+            async def endpoint(**kwargs):
+                result = fn(**kwargs)
+                if inspect.isawaitable(result): result = await result
+                if isinstance(result, HTTPResponse): return result
+                return HTTPResponse(result, content_type=content_type)
+            endpoint.__name__ = getattr(fn, '__name__', kind)
+            endpoint.__doc__ = fn.__doc__
+            endpoint._pyapify_extension_kind = kind
+            return self.route(path, ['GET'], **opts)(endpoint)
+        return deco
+
     def sse(self, path, **opts):
         def deco(fn):
             async def endpoint(**kwargs):
-                result = fn(**kwargs); result = await result if inspect.isawaitable(result) else result; return HTTP.sse(result)
-            endpoint.__name__ = getattr(fn, '__name__', 'sse'); endpoint.__doc__ = fn.__doc__; return self.route(path, ['GET'], **opts)(endpoint)
+                result = fn(**kwargs)
+                result = await result if inspect.isawaitable(result) else result
+                return HTTP.sse(result)
+            endpoint.__name__ = getattr(fn, '__name__', 'sse')
+            endpoint.__doc__ = fn.__doc__
+            endpoint._pyapify_extension_kind = 'sse'
+            return self.route(path, ['GET'], **opts)(endpoint)
         return deco
-    def websocket(self, path, **opts): opts['websocket'] = True; return self.route(path, ['GET'], **opts)
+
+    def html(self, path, **opts):
+        return self._specialized(path, 'html', 'text/html; charset=utf-8', **opts)
+
+    def css(self, path, **opts):
+        return self._specialized(path, 'css', 'text/css; charset=utf-8', **opts)
+
+    def js(self, path, **opts):
+        return self._specialized(path, 'js', 'application/javascript; charset=utf-8', **opts)
+
+    def gui(self, path, **opts):
+        return self._specialized(path, 'gui', 'application/x-pyapify-gui', **opts)
+
+    def websocket(self, path, **opts):
+        opts['websocket'] = True
+        return self.route(path, ['GET'], **opts)
     def middleware(self, fn=None):
         if fn is None: return lambda f: self.middleware(f)
         self._middleware.append(fn); return fn
@@ -399,12 +432,33 @@ class PyAPIfy:
                 if inspect.isawaitable(result):
                     result = await result
             response = result if isinstance(result, HTTPResponse) else HTTPResponse(result)
-            for name, extension in self.sse_extensions.items():
-                transformed = extension(response, req)
-                if inspect.isawaitable(transformed): transformed = await transformed
-                if transformed is not None:
-                    response = transformed if isinstance(transformed, HTTPResponse) else HTTPResponse(transformed)
+            content_type = response.content_type or next(
+                (v for k, v in response.headers.items() if k.lower() == 'content-type'), ''
+            )
+            content_type = content_type.split(';', 1)[0].lower()
+            extension_sets = []
+            if content_type == 'text/html':
+                extension_sets.append(self.html_extensions)
+            elif content_type == 'text/css':
+                extension_sets.append(self.css_extensions)
+            elif content_type in ('application/javascript', 'text/javascript'):
+                extension_sets.append(self.js_extensions)
+            elif content_type == 'text/event-stream':
+                extension_sets.append(self.sse_extensions)
+            elif content_type == 'application/x-pyapify-gui':
+                extension_sets.append(self.gui_extensions)
+            for extensions in extension_sets:
+                for name, extension in extensions.items():
+                    try:
+                        transformed = extension(response, req)
+                    except TypeError:
+                        transformed = extension()
+                    if inspect.isawaitable(transformed):
+                        transformed = await transformed
+                    if transformed is not None:
+                        response = transformed if isinstance(transformed, HTTPResponse) else HTTPResponse(transformed)
             await bg.run()
+            return response
             return response
         nxt = terminal
         for mw in reversed(self._middleware):
