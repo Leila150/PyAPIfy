@@ -135,7 +135,9 @@ def test_plugin_extensions_wire_into_runtime_registries():
     assert api.permissions['admin'] is admin
     assert api.route_types['custom'] is custom_route
     assert 'PURGE' in api.http_methods
-    assert api.status_codes['CUSTOM'] is status_code
+    assert api.status_codes['CUSTOM'] == 299
+    assert HTTP.CUSTOM == 299
+    assert HTTP.custom(detail='custom').status == 299
     assert api.request_handlers['handler'] is handler
     assert api.response_types['response'] is response
     assert api.tasks['task'] is task
