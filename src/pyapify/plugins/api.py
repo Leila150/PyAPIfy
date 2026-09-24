@@ -19,7 +19,7 @@ class Plugin:
     def __init__(self, root: str | os.PathLike[str] | None = None):
         self.root = Path(root).resolve() if root else self._discover_root()
         self._registry={}; self._app=None; self._metadata={}; self._loaded={}
-        self._enabled=True; self._registered=False; self._used_plugins=[]; self._cache=None
+        self._enabled=True; self._registered=False; self._started=False; self._used_plugins=[]; self._cache=None
         self._read_metadata()
 
     def _discover_root(self):
@@ -181,33 +181,49 @@ class Plugin:
         if self._app is not None:
             for kind,items in self._registry.items():
                 for name in list(items): self._detach(kind,name)
-        self._registered=False; return self
-    def enable(self): self._enabled=True; return self.bind(self._app) if self._app is not None else self
+        self._registered=False; self._started=False; return self
+    def enable(self):
+        self._enabled=True
+        if self._app is not None: self.bind(self._app)
+        return self
     def disable(self):
         if self._enabled and self._app is not None:
             for kind,items in self._registry.items():
                 for name in list(items): self._detach(kind,name)
-        self._enabled=False; return self
+        self._enabled=False; self._started=False; return self
     def enabled(self): return self._enabled
     def is_registered(self): return self._registered
+    def started(self): return self._started
     def startup(self,app):
+        if not self._enabled or self._started: return None
         hook=self._registry.get('hook',{}).get('startup')
         if hook:
             result=hook['value'](app)
-            if inspect.isawaitable(result): return result
+            if inspect.isawaitable(result):
+                async def finish():
+                    await result
+                    self._started=True
+                return finish()
+        self._started=True
         return None
     def shutdown(self,app):
+        if not self._started: return None
         hook=self._registry.get('hook',{}).get('shutdown')
         if hook:
             result=hook['value'](app)
-            if inspect.isawaitable(result): return result
+            if inspect.isawaitable(result):
+                async def finish():
+                    await result
+                    self._started=False
+                return finish()
+        self._started=False
         return None
     def uninstall(self,app=None):
         target=app or self._app
         if target is not None:
             for kind,items in self._registry.items():
                 for name in list(items): target._unregister_plugin_extension(kind,name,self)
-        self._app=None; self._registered=False; return self
+        self._app=None; self._registered=False; self._started=False; return self
     def capabilities(self): return set(self._registry)
 
 
