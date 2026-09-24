@@ -251,20 +251,42 @@ class PluginManager:
         return plugin
 
     def reload(self, name):
-        self.uninstall(name, remove_cache=False)
+        plugin = self.require(name)
+        was_enabled = plugin.enabled()
+        was_started = plugin.started()
+        if was_started:
+            self.stop(name)
+        plugin.uninstall(self.app)
+        self.plugins.pop(name, None)
         directory = self._directory() / name
         if not directory.is_dir():
             raise FileNotFoundError(f"Installed plugin not found: {name}")
         result = self.load(directory)
+        if not was_enabled:
+            self.disable(name)
+        if was_started:
+            result = self.start(name) or result
         self.runtime.log("info", "Plugin reloaded: %s", name)
         return result
 
-    def update(self, name, source=None, *, overwrite=True):
+    def update(self, name, source=None, *, overwrite=True, force=False):
         if source is None:
             raise ValueError("update() requires a local plugin source")
-        self.uninstall(name)
-        destination = self.install(source, name=name, overwrite=overwrite)
-        result = self.load(destination)
+        old = self.require(name)
+        dependents = self.dependents(name)
+        if dependents and not force:
+            raise RuntimeError(f"Cannot update {name}; loaded plugins depend on it: {', '.join(dependents)}")
+        was_enabled = old.enabled()
+        was_started = old.started()
+        self.stop(name) if was_started else None
+        old.uninstall(self.app)
+        self.plugins.pop(name, None)
+        self.install(source, name=name, overwrite=overwrite)
+        result = self.load(self._directory() / name)
+        if not was_enabled:
+            self.disable(name)
+        if was_started:
+            self.start(name)
         self.runtime.log("info", "Plugin updated: %s", name)
         return result
 
