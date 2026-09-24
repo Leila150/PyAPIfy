@@ -16,29 +16,33 @@ def _manager(plugin: Plugin):
 
 
 def use(self: Plugin, target):
-    """Use another installed/loaded PyAPIfy plugin.
-
-    Accepts a Plugin instance, an installed plugin name, a plugin directory,
-    or a Python module target understood by PluginManager.load().
-    """
+    """Use another installed/loaded PyAPIfy plugin."""
     if isinstance(target, Plugin):
-        return Plugin.use(self, target)
-    manager = _manager(self)
-    if isinstance(target, (str, Path)):
-        path = Path(target).expanduser()
-        if path.is_dir():
-            other = manager.load(path)
-        elif manager.loaded(str(target)):
-            other = manager.get(str(target))
-        else:
-            installed = manager.default_directory() / str(target)
-            other = manager.load(installed) if installed.is_dir() else manager.load(str(target))
-        if other is self:
+        if target is self:
             raise ValueError("A plugin cannot use itself")
-        if other not in self._used_plugins:
-            self._used_plugins.append(other)
-        return other
-    raise TypeError("plugin.use() expects a Plugin, plugin name, directory, or module target")
+        if target not in self._used_plugins:
+            self._used_plugins.append(target)
+        if self._app is not None and target not in self._app.plugins:
+            self._app.use(target)
+        return target
+
+    manager = _manager(self)
+    if isinstance(target, Path):
+        other = manager.load(target)
+    elif isinstance(target, str):
+        if target in manager.plugins:
+            other = manager.plugins[target]
+        else:
+            installed = manager.default_directory() / target
+            other = manager.load(installed) if installed.is_dir() else manager.load(target)
+    else:
+        raise TypeError("plugin.use() expects a Plugin, plugin name, directory, or module target")
+
+    if other is self:
+        raise ValueError("A plugin cannot use itself")
+    if other not in self._used_plugins:
+        self._used_plugins.append(other)
+    return other
 
 
 def install(self: Plugin, source, *, name=None, overwrite=False):
@@ -81,6 +85,14 @@ def require_plugin(self: Plugin, name):
     return _manager(self).require(name)
 
 
+def dependency_status(self: Plugin, name=None):
+    return _manager(self).dependency_status(name or self.name())
+
+
+def dependency_tree(self: Plugin, name=None):
+    return _manager(self).dependency_tree(name or self.name())
+
+
 Plugin.use = use
 Plugin.install = install
 Plugin.uninstall = uninstall
@@ -92,3 +104,5 @@ Plugin.enable_plugin = enable
 Plugin.disable_plugin = disable
 Plugin.plugins = plugins
 Plugin.require_plugin = require_plugin
+Plugin.dependency_status = dependency_status
+Plugin.dependency_tree = dependency_tree
