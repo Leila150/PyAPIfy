@@ -97,6 +97,9 @@ class PyAPIfy:
                 custom_method.__name__ = attr
                 setattr(self, attr, custom_method)
         elif kind == 'status_code':
+            upper = name.upper()
+            if hasattr(HTTP, upper) or hasattr(HTTP, name.lower()):
+                raise ValueError(f'HTTP status code name is already reserved: {name}')
             code = meta.get('value', value)
             if not isinstance(code, int) or isinstance(code, bool):
                 if callable(value):
@@ -149,11 +152,11 @@ class PyAPIfy:
                 if current is not None and getattr(current, '__name__', None) == attr:
                     delattr(self, attr)
         elif kind == 'status_code':
-            self.status_codes.pop(name, None)
+            code = self.status_codes.pop(name, None)
             upper, lower = name.upper(), name.lower()
-            if hasattr(HTTP, upper):
+            if code is not None and getattr(HTTP, upper, None) == code:
                 delattr(HTTP, upper)
-            if hasattr(HTTP, lower):
+            if code is not None and getattr(HTTP, lower, None) is not None:
                 delattr(HTTP, lower)
         elif kind in ('request_handler','response_type'): getattr(self, kind+'s').pop(name, None)
         elif kind in ('task','schedule'): getattr(self, kind+'s').pop(name, None)
