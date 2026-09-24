@@ -149,7 +149,9 @@ class PluginManager:
 
     def start(self, name):
         plugin = self.require(name)
-        order = self.check_dependencies()
+        if not plugin.enabled():
+            raise RuntimeError(f"Cannot start disabled plugin: {name}")
+        self.check_dependencies()
         dependencies = self.dependencies(name)
         for dependency in dependencies:
             if dependency in self.plugins and not self.plugins[dependency].started():
@@ -193,6 +195,7 @@ class PluginManager:
             "loaded": self.loaded(name),
             "enabled": plugin.enabled(),
             "registered": plugin.is_registered(),
+            "started": plugin.started(),
             "capabilities": tuple(sorted(plugin.capabilities())),
             "dependencies": self.dependency_status(name),
         }
