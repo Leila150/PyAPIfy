@@ -1,3 +1,5 @@
+import asyncio
+import pytest
 from pyapify import HTTP, PyAPIfy, Plugin, http
 
 
@@ -203,3 +205,24 @@ def test_plugin_route_type_is_live():
 
     missing = api.test().get('/items')
     assert missing.status == 404
+
+
+@pytest.mark.asyncio
+async def test_plugin_schedule_runs_and_stops():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+    calls = []
+
+    @plugin.create_schedule(name='heartbeat', seconds=0)
+    async def heartbeat():
+        calls.append(1)
+        if len(calls) >= 2:
+            api._schedule_tasks['heartbeat'].cancel()
+
+    api.use(plugin)
+    await api.startup_async()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert len(calls) >= 2
+    await api.shutdown_async()
+    assert not api._schedule_tasks
