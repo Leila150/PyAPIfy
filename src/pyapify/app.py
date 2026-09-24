@@ -399,6 +399,11 @@ class PyAPIfy:
                 if inspect.isawaitable(result):
                     result = await result
             response = result if isinstance(result, HTTPResponse) else HTTPResponse(result)
+            for name, extension in self.sse_extensions.items():
+                transformed = extension(response, req)
+                if inspect.isawaitable(transformed): transformed = await transformed
+                if transformed is not None:
+                    response = transformed if isinstance(transformed, HTTPResponse) else HTTPResponse(transformed)
             await bg.run()
             return response
         nxt = terminal
