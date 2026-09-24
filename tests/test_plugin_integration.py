@@ -333,3 +333,27 @@ async def test_response_extension_type_error_is_not_retried():
     assert response.status == 500
     assert calls == [1]
     assert 'TypeError' in response.data['error']
+
+
+@pytest.mark.asyncio
+async def test_plugin_error_handler_resolves_exception_type_and_does_not_mask_failures():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+
+    @plugin.create_error_handler(name='ValueError')
+    def value_error(exc):
+        return HTTP.text('plugin handled', status=418)
+
+    api.use(plugin)
+
+    @api.get('/boom')
+    def boom():
+        raise ValueError('bad')
+
+    response = await api.dispatch(__import__('pyapify').Request('GET', '/boom', {}, b'', ('127.0.0.1', 1), 'http'))
+    assert response.status == 418
+    assert response.data == 'plugin handled'
+
+    plugin.disable()
+    response = await api.dispatch(__import__('pyapify').Request('GET', '/boom', {}, b'', ('127.0.0.1', 1), 'http'))
+    assert response.status == 500
