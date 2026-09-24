@@ -263,6 +263,14 @@ class PyAPIfy:
                 payload = request.json
                 if not isinstance(payload, dict): raise TypeError('Model body must be a JSON object')
                 kwargs[name] = ann(**payload)
+            elif isinstance(ann, str) and ann in self.model_types:
+                model_type = self.model_types[ann]
+                payload = request.json
+                kwargs[name] = model_type(**payload) if isinstance(payload, dict) and inspect.isclass(model_type) else model_type(payload)
+            elif ann in self.model_types:
+                model_type = self.model_types[ann]
+                payload = request.json
+                kwargs[name] = model_type(**payload) if isinstance(payload, dict) and inspect.isclass(model_type) else model_type(payload)
             elif name in request.params: kwargs[name] = _convert(request.params[name], ann)
             elif p.default is not inspect.Parameter.empty: kwargs[name] = p.default
             elif _is_optional(ann): kwargs[name] = None
@@ -327,6 +335,17 @@ class PyAPIfy:
         return False
     async def dispatch(self, request):
         if len(request.body) > self.max_body_size: return HTTP.status_code(code=413, detail='Request body too large')
+        for name, handler in self.request_handlers.items():
+            try:
+                result = handler(request)
+                if inspect.isawaitable(result):
+                    result = await result
+                if isinstance(result, Request):
+                    request = result
+                elif result is not None:
+                    request.state = result
+            except Exception as exc:
+                return HTTP.status_code(code=400, detail=f'Request handler {name} failed: {exc}')
         route, params = self.router.match(request.path, request.method)
         if route is None:
             methods = self.router.methods_for(request.path)
@@ -340,7 +359,14 @@ class PyAPIfy:
             except Exception as exc:
                 return HTTP.status_code(code=422, detail=str(exc))
         async def terminal(req):
-            result, bg = await self._call(route.endpoint, req, params); response = result if isinstance(result, HTTPResponse) else HTTPResponse(result); await bg.run(); return response
+            result, bg = await self._call(route.endpoint, req, params)
+            for name, handler in self.response_types.items():
+                result = handler(result)
+                if inspect.isawaitable(result):
+                    result = await result
+            response = result if isinstance(result, HTTPResponse) else HTTPResponse(result)
+            await bg.run()
+            return response
         nxt = terminal
         for mw in reversed(self._middleware):
             previous = nxt
