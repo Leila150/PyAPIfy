@@ -38,36 +38,28 @@ class PluginManager:
         plugin = self.require(name)
         required = []
         optional = []
-        metadata = plugin.info()
         for raw in plugin.dependencies():
             dep_name, requirement = dependency_parts(raw)
             found = self.plugins.get(dep_name)
-            required.append({"name": dep_name, "requirement": requirement,
-                             "installed": found is not None,
+            required.append({"name": dep_name, "requirement": requirement, "installed": found is not None,
                              "version": found.version() if found else None,
                              "satisfied": found is not None and (not requirement or satisfies(found.version(), requirement))})
-        for raw in metadata.get("optionalDepends", []) or []:
+        for raw in plugin.info().get("optionalDepends", []) or []:
             dep_name, requirement = dependency_parts(raw)
             found = self.plugins.get(dep_name)
-            optional.append({"name": dep_name, "requirement": requirement,
-                             "installed": found is not None,
+            optional.append({"name": dep_name, "requirement": requirement, "installed": found is not None,
                              "version": found.version() if found else None,
                              "satisfied": found is not None and (not requirement or satisfies(found.version(), requirement))})
         return {"required": tuple(required), "optional": tuple(optional)}
 
     def dependency_tree(self, name=None):
         names = [name] if name else list(self.plugins)
-        tree = {}
-        for plugin_name in names:
-            plugin = self.require(plugin_name)
-            tree[plugin_name] = [dependency_parts(x)[0] for x in plugin.dependencies() if dependency_parts(x)[0]]
-        return tree
+        return {n: [dependency_parts(x)[0] for x in self.require(n).dependencies() if dependency_parts(x)[0]] for n in names}
 
     def check_dependencies(self):
         order = self.resolve()
         for name in self.plugins:
-            status = self.dependency_status(name)
-            failed = [x for x in status["required"] if not x["satisfied"]]
+            failed = [x for x in self.dependency_status(name)["required"] if not x["satisfied"]]
             if failed:
                 raise RuntimeError(f"Unsatisfied dependencies for {name}: {failed}")
         self.runtime.log("debug", "Plugin dependencies resolved: %s", order)
@@ -126,17 +118,21 @@ class PluginManager:
             if candidate.is_dir():
                 return self.load(candidate)
             raise KeyError(f"Plugin is not installed: {plugin}")
-        if isinstance(plugin, (Path,)):
+        if isinstance(plugin, Path):
             return self.load(plugin)
         return self.register(plugin)
 
     def get(self, name): return self.plugins.get(name)
+
     def require(self, name):
         plugin = self.get(name)
         if plugin is None:
             raise KeyError(f"Plugin is not loaded: {name}")
         return plugin
-    def exists(self, name): return name in self.plugins or (self._directory() / name).is_dir()
+
+    def exists(self, name):
+        return name in self.plugins or (self._directory() / name).is_dir()
+
     def loaded(self, name): return name in self.plugins
     def enabled(self, name): return bool(self.require(name).enabled())
     def capabilities(self): return {cap for p in self.plugins.values() for cap in p.capabilities()}
@@ -145,26 +141,65 @@ class PluginManager:
     def cache(self, plugin_name="pyapify"): return self.runtime.cache(plugin_name)
     def log(self, level="info", message="", *args, **kwargs): return self.runtime.log(level, message, *args, **kwargs)
 
+    @staticmethod
+    def _safe_zip_members(archive, destination):
+        destination = destination.resolve()
+        for member in archive.infolist():
+            target = (destination / member.filename).resolve()
+            try:
+                target.relative_to(destination)
+            except ValueError:
+                raise ValueError(f"Unsafe plugin archive path: {member.filename}")
+            if member.is_dir():
+                continue
+            if target.exists() and target.is_symlink():
+                raise ValueError(f"Unsafe plugin archive symlink: {member.filename}")
+        return True
+
+    def _extract_zip(self, archive_path, destination):
+        with zipfile.ZipFile(archive_path) as archive:
+            if any(info.file_size > 256 * 1024 * 1024 for info in archive.infolist()):
+                raise ValueError("Plugin archive contains a file larger than 256 MiB")
+            self._safe_zip_members(archive, destination)
+            archive.extractall(destination)
+
+    def _validate_plugin_directory(self, root):
+        root = Path(root)
+        if not (root / "main.py").is_file():
+            raise FileNotFoundError(f"Plugin entry point not found: {root / 'main.py'}")
+        metadata = root / "info.json"
+        if metadata.exists():
+            probe = Plugin(root)
+            if not probe.name().strip():
+                raise ValueError("Plugin metadata contains an empty name")
+            if not probe.version().strip():
+                raise ValueError("Plugin metadata contains an empty version")
+        return root
+
     def install(self, source, *, name=None, overwrite=False):
         source = Path(source).expanduser().resolve()
         destination_root = self._directory()
         if source.is_dir():
+            self._validate_plugin_directory(source)
             plugin_name = name or (Plugin(source).name() if (source / "info.json").is_file() else source.name)
             destination = destination_root / plugin_name
             if destination.exists():
-                if not overwrite: raise FileExistsError(f"Plugin already installed: {plugin_name}")
+                if not overwrite:
+                    raise FileExistsError(f"Plugin already installed: {plugin_name}")
                 shutil.rmtree(destination)
             shutil.copytree(source, destination)
         elif source.is_file() and source.suffix.lower() == ".zip":
             with tempfile.TemporaryDirectory() as temp:
                 temp_root = Path(temp)
-                with zipfile.ZipFile(source) as archive: archive.extractall(temp_root)
+                self._extract_zip(source, temp_root)
                 candidates = [p for p in temp_root.iterdir() if p.is_dir()]
                 source_dir = candidates[0] if len(candidates) == 1 else temp_root
+                self._validate_plugin_directory(source_dir)
                 plugin_name = name or Plugin(source_dir).name()
                 destination = destination_root / plugin_name
                 if destination.exists():
-                    if not overwrite: raise FileExistsError(f"Plugin already installed: {plugin_name}")
+                    if not overwrite:
+                        raise FileExistsError(f"Plugin already installed: {plugin_name}")
                     shutil.rmtree(destination)
                 shutil.copytree(source_dir, destination)
         else:
@@ -177,21 +212,25 @@ class PluginManager:
         if plugin is not None:
             plugin.uninstall(self.app)
         directory = self._directory() / name
-        if directory.exists(): shutil.rmtree(directory)
-        if remove_cache: self.runtime.cache(name).clear()
+        if directory.exists():
+            shutil.rmtree(directory)
+        if remove_cache:
+            self.runtime.cache(name).clear()
         self.runtime.log("info", "Plugin uninstalled: %s", name)
         return plugin
 
     def reload(self, name):
         self.uninstall(name, remove_cache=False)
         directory = self._directory() / name
-        if not directory.is_dir(): raise FileNotFoundError(f"Installed plugin not found: {name}")
+        if not directory.is_dir():
+            raise FileNotFoundError(f"Installed plugin not found: {name}")
         result = self.load(directory)
         self.runtime.log("info", "Plugin reloaded: %s", name)
         return result
 
     def update(self, name, source=None, *, overwrite=True):
-        if source is None: raise ValueError("update() requires a local plugin source")
+        if source is None:
+            raise ValueError("update() requires a local plugin source")
         self.uninstall(name)
         destination = self.install(source, name=name, overwrite=overwrite)
         result = self.load(destination)
@@ -202,6 +241,7 @@ class PluginManager:
         result = self.require(name).enable()
         self.runtime.log("info", "Plugin enabled: %s", name)
         return result
+
     def disable(self, name):
         result = self.require(name).disable()
         self.runtime.log("info", "Plugin disabled: %s", name)
@@ -212,7 +252,8 @@ class PluginManager:
             plugin = self.plugins[name]
             try:
                 result = plugin.startup(self.app)
-                if hasattr(result, "__await__"): await result
+                if hasattr(result, "__await__"):
+                    await result
                 self.runtime.log("info", "Plugin started: %s", name)
             except Exception:
                 self.runtime.logger.exception("Plugin startup failed: %s", name)
@@ -223,7 +264,8 @@ class PluginManager:
             plugin = self.plugins[name]
             try:
                 result = plugin.shutdown(self.app)
-                if hasattr(result, "__await__"): await result
+                if hasattr(result, "__await__"):
+                    await result
                 self.runtime.log("info", "Plugin stopped: %s", name)
             except Exception:
                 self.runtime.logger.exception("Plugin shutdown failed: %s", name)
