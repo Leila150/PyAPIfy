@@ -226,3 +226,36 @@ async def test_plugin_schedule_runs_and_stops():
     assert len(calls) >= 2
     await api.shutdown_async()
     assert not api._schedule_tasks
+
+
+@pytest.mark.asyncio
+async def test_plugin_sse_extension_transforms_response():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+
+    @plugin.create_sse(name='sse_wrapper')
+    async def sse_wrapper(response, request):
+        response.headers['X-SSE-Plugin'] = 'enabled'
+        return response
+
+    api.use(plugin)
+
+    @api.get('/events')
+    async def events():
+        return HTTP.sse('hello')
+
+    response = await api.dispatch(__import__('pyapify').Request('GET', '/events', {}, b'', ('127.0.0.1', 1), 'http'))
+    assert response.status == 200
+    assert response.headers['X-SSE-Plugin'] == 'enabled'
+
+
+def test_plugin_websocket_extension_is_registered_for_transport():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+
+    def websocket_extension(ws, request, route, params):
+        return ws
+
+    plugin.create_websocket(name='transport_hook')(websocket_extension)
+    api.use(plugin)
+    assert api.websocket_extensions['transport_hook'] is websocket_extension
