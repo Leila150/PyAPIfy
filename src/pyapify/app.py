@@ -50,6 +50,7 @@ class PyAPIfy:
         self.router = Router()
         self._middleware, self.errors = [], {}
         self._startup, self._shutdown = [], []
+        self._plugin_lifecycle = {}
         self.plugins, self.plugin_manager = [], PluginManager(self)
         self.auth, self.max_body_size = auth, max_body_size
         self._started = False
@@ -136,7 +137,10 @@ class PyAPIfy:
             if value not in self._middleware: self._middleware.append(value)
         elif kind == 'lifecycle':
             phase = meta.get('phase') or name
-            (self._startup if phase in ('startup','start') else self._shutdown if phase in ('shutdown','stop') else self._startup).append(value)
+            target = self._startup if phase in ('startup','start') else self._shutdown if phase in ('shutdown','stop') else self._startup
+            self._remove_plugin_lifecycle(plugin, name)
+            target.append(value)
+            self._plugin_lifecycle[(plugin, name)] = (target, value)
 
     def _unregister_plugin_extension(self, kind, name, plugin):
         item = self._plugin_extensions.get(kind, {}).get(name)
@@ -186,6 +190,7 @@ class PyAPIfy:
             if current is not None and getattr(current, '__name__', None) == name: delattr(self, name)
         elif kind == 'hook': self._plugin_hooks.pop(name, None)
         elif kind == 'middleware': self._middleware = [mw for mw in self._middleware if mw is not value]
+        elif kind == 'lifecycle': self._remove_plugin_lifecycle(plugin, name)
 
     def plugin_extensions(self, kind=None):
         if kind is None: return {k: dict(v) for k,v in self._plugin_extensions.items()}
@@ -292,9 +297,22 @@ class PyAPIfy:
         group = Router(prefix, auth=kw.get('auth', self.auth), tags=kw.get('tags', ())); self.routers[id(group)] = group; return group
     def include(self, router): self.router.routes.extend(router.routes); return router
     def use(self, plugin): self.plugin_manager.register(plugin); self.plugins.append(plugin); return plugin
+    def _remove_plugin_lifecycle(self, plugin, name):
+        entry = self._plugin_lifecycle.pop((plugin, name), None)
+        if entry is None:
+            return False
+        target, value = entry
+        try:
+            target.remove(value)
+        except ValueError:
+            pass
+        return True
+
     async def _lifecycle(self, funcs):
-        for fn in funcs:
-            result = fn(); result = await result if inspect.isawaitable(result) else result
+        for fn in list(funcs):
+            result = fn()
+            if inspect.isawaitable(result):
+                await result
     async def _run_plugin_schedule(self, name, value, meta):
         days = meta.get('days', 0); hours = meta.get('hours', 0); minutes = meta.get('minutes', 0)
         seconds = meta.get('seconds', meta.get('interval', 0))
@@ -319,9 +337,31 @@ class PyAPIfy:
             if not task.done(): task.cancel()
         if tasks: await asyncio.gather(*tasks, return_exceptions=True)
     async def startup_async(self):
-        if not self._started: await self.plugin_manager.startup(); await self._lifecycle(self._startup); self._start_plugin_schedules(); self._started = True
+        if self._started:
+            return
+        try:
+            await self.plugin_manager.startup()
+            await self._lifecycle(self._startup)
+            self._start_plugin_schedules()
+            self._started = True
+        except Exception:
+            await self._stop_plugin_schedules()
+            try:
+                await self.plugin_manager.shutdown()
+            except Exception:
+                pass
+            self._started = False
+            raise
+
     async def shutdown_async(self):
-        if self._started: await self._stop_plugin_schedules(); await self._lifecycle(reversed(self._shutdown)); await self.plugin_manager.shutdown(); self._started = False
+        if not self._started:
+            return
+        try:
+            await self._stop_plugin_schedules()
+            await self._lifecycle(reversed(self._shutdown))
+            await self.plugin_manager.shutdown()
+        finally:
+            self._started = False
     async def _resolve_dependency(self, dep, request, cache):
         if dep.use_cache and dep.dependency in cache: return cache[dep.dependency]
         fn, kwargs = dep.dependency, {}
