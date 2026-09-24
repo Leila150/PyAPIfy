@@ -134,7 +134,12 @@ class HTTPServer:
         ws=WebSocket(conn);req.websocket=ws
         async def run():
             if not await self.app._auth_async(route.auth,req):ws.close(1008,'Authentication required');return
-            try: await self.app._call(route.endpoint,req,params,websocket=ws)
+            try:
+                for name, extension in self.app.websocket_extensions.items():
+                    result = extension(ws, req, route, params)
+                    if inspect.isawaitable(result): result = await result
+                    if result is not None: ws = result; req.websocket = ws
+                await self.app._call(route.endpoint,req,params,websocket=ws)
             except WebSocketDisconnect:pass
             except Exception:
                 logger.exception("WebSocket endpoint failed: %s", req.path)
