@@ -75,3 +75,79 @@ def test_extension_builder_create_edit_delete():
     plugin.edit_validator("positive", replacement, description="updated")
     assert plugin.delete_validator("positive") is replacement
     assert "validator" not in plugin.capabilities()
+
+
+def test_plugin_lifecycle_extension_is_owned_and_removed_on_disable():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin(Path(__file__).parent)
+    calls = []
+
+    @plugin.create_lifecycle(name="startup_hook", phase="startup")
+    def startup_hook(app):
+        calls.append("startup")
+
+    api.use(plugin)
+    assert startup_hook in api._startup
+    plugin.disable()
+    assert startup_hook not in api._startup
+    assert ("startup_hook" not in api.plugin_extensions("lifecycle"))
+
+
+def test_plugin_lifecycle_edit_does_not_duplicate_callbacks():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin(Path(__file__).parent)
+    calls = []
+
+    @plugin.create_lifecycle(name="startup_hook", phase="startup")
+    def startup_hook(app):
+        calls.append("old")
+
+    api.use(plugin)
+
+    def replacement(app):
+        calls.append("new")
+
+    plugin.edit_lifecycle("startup_hook", replacement, phase="startup")
+    assert api._startup.count(replacement) == 1
+    assert startup_hook not in api._startup
+
+
+@pytest.mark.asyncio
+async def test_plugin_async_lifecycle_hooks_run_and_shutdown_in_order():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin(Path(__file__).parent)
+    calls = []
+
+    @plugin.create_lifecycle(name="startup_hook", phase="startup")
+    async def startup_hook(app):
+        calls.append("startup")
+
+    @plugin.create_lifecycle(name="shutdown_hook", phase="shutdown")
+    async def shutdown_hook(app):
+        calls.append("shutdown")
+
+    api.use(plugin)
+    await api.startup_async()
+    assert calls == ["startup"]
+    assert api._started
+
+    await api.shutdown_async()
+    assert calls == ["startup", "shutdown"]
+    assert not api._started
+
+
+@pytest.mark.asyncio
+async def test_failed_plugin_lifecycle_startup_rolls_back_app_state():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin(Path(__file__).parent)
+
+    @plugin.create_lifecycle(name="broken", phase="startup")
+    async def broken(app):
+        raise RuntimeError("startup failed")
+
+    api.use(plugin)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await api.startup_async()
+
+    assert not api._started
