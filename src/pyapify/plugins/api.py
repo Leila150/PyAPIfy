@@ -163,8 +163,11 @@ class Plugin:
                     pass
             for used in reversed(added_used):
                 try:
+                    if hasattr(app, 'plugin_manager'):
+                        app.plugin_manager.plugins.pop(used.name(), None)
                     if used in app.plugins:
                         app.plugins.remove(used)
+                    used.unregister()
                 except Exception:
                     pass
             self._app=previous_app
