@@ -305,3 +305,31 @@ async def test_plugin_html_css_js_gui_extensions_transform_matching_responses():
     assert client.get('/style.css').headers['X-CSS-Plugin'] == 'enabled'
     assert client.get('/app.js').headers['X-JS-Plugin'] == 'enabled'
     assert client.get('/gui').headers['X-GUI-Plugin'] == 'enabled'
+
+
+@pytest.mark.asyncio
+async def test_response_extension_type_error_is_not_retried():
+    api = PyAPIfy(docs=False)
+    plugin = Plugin()
+    calls = []
+
+    @plugin.create_html(name='broken_html')
+    def broken_html(response, request):
+        calls.append(1)
+        raise TypeError('intentional extension failure')
+
+    api.use(plugin)
+
+    @api.html('/broken')
+    def broken():
+        return 'hello'
+
+    response = await api.dispatch(
+        __import__('pyapify').Request(
+            'GET', '/broken', {}, b'', ('127.0.0.1', 1), 'http'
+        )
+    )
+
+    assert response.status == 500
+    assert calls == [1]
+    assert 'TypeError' in response.data['error']
